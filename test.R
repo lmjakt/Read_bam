@@ -17,16 +17,20 @@ ref.seq <- read.fasta("KI270733.fasta")
 bam.f <- "test_srt.bam"
 bam.i <- "test_srt.bam.bai"
 region <- "KI270733.1"
-range <- c(130000, 130100)
+range <- c(130000, 131000)
 
 bam.ptr <- load.bam(bam.f, bam.i)
-bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=1L)
+bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=1L, transpose=TRUE)
+tmp1 <- aligned.region(region, range, bam.ptr, opt.flag=3L)
+
 tmp <- aligned.region("1", range, bam.ptr, opt.flag=1L)
 tmp <- aligned.region('contig_1', range, bam.ptr, opt.flag=1L)
 
-bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=3L, ref.seq=ref.seq)
+bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=7L, ref.seq=ref.seq, transpose=TRUE)
 
 bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=7L, ref.seq=ref.seq, transpose=TRUE)
+
+bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=3L, transpose=TRUE)
 
 
 tlengths <- target.lengths(bam.ptr)
@@ -46,6 +50,13 @@ system.time(
 ## user  system elapsed 
 ## 0.021   0.001   0.021 
 
+
+bam.reg.3 <- aligned.region(region, range.2, bam.ptr, transpose=TRUE, opt.flag=7L, ref.seq=ref.seq)
+
+ars.ref.f <- paste("/home/lmj/genomes/lophius/ont_data/assembly/flye/v2/ref_to_v2_minimap/", c("flye_v2_ref.bam", "flye_v2_ref.bam.bai"), sep="") 
+bam.ptr.2 <- load.bam(ars.ref.f[1], ars.ref.f[2])
+
+tmp <- aligned.region("contig_77", c(1, 1000000), bam.ptr.2, transpose=TRUE, opt.flag=7L)
 
 system.time(
         bam.reg.2 <- aligned.region(region, range.2, bam.ptr, transpose=TRUE, flag.filter=c(0, 0), opt.flag=3L, ref.seq=ref.seq)

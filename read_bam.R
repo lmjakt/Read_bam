@@ -31,6 +31,23 @@ aligned.region <- function(region, range, bam.ptr, transpose=FALSE, merge=FALSE,
     tmp
 }
 
+sam.read.n <- function(bam.ptr, n){
+    tmp <- .Call("sam_read_n", bam.ptr, as.integer(n))
+    names(tmp) <- c("n", "id", "seq", "qual", "aux");
+    tmp
+}
+
+## ret flag is a bitwise flag that determines whether
+## the counts for the indivdiual bits (01) or the
+## counts for all possible flags (10) are returned.
+## (11 --> both). There does not seem to be any major
+## change in the time taken.
+sam.flag.stats <- function(bam.ptr, ret.flag){
+    tmp <- .Call("sam_flag_stats", bam.ptr, as.integer(ret.flag));
+    names(tmp) <- c('bit', 'flag')
+    tmp
+}
+
 target.lengths <- function(bam.ptr){
     .Call("target_lengths", bam.ptr)
 }

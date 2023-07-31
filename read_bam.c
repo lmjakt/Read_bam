@@ -28,8 +28,10 @@ static void finalise_bam_ptrs(SEXP ptr_r){
     return;
   struct bam_ptrs *ptr = (struct bam_ptrs*)R_ExternalPtrAddr(ptr_r);
   // destroy the various indices
-  sam_hdr_destroy( ptr->header );
-  hts_idx_destroy( ptr->index );
+  if( ptr->header )
+    sam_hdr_destroy( ptr->header );
+  if( ptr->index )
+    hts_idx_destroy( ptr->index );
   // It is _not_ safe to: 
   //  free( ptr->sam ); 
   // and there is no hts_file_destroy / sam_file_destroy
@@ -141,6 +143,75 @@ char *bam_seq(bam1_t *bam){
   return(seq);
 }
 
+// Avoid malloc if possible:
+// but note that whatever we do, we end up copying data too much
+// Note that we could probably use, a single call of `nibble2base`
+// to get the sequence.
+size_t bam_seq_p(bam1_t *bam, char **seq, size_t seq_l){
+  if(seq_l < 1 + bam->core.l_qseq){
+    seq_l = 1 + bam->core.l_qseq;
+    *seq = realloc( *seq, 1 + seq_l );
+  }
+  uint8_t *seq_data = bam_get_seq(bam);
+  (*seq)[bam->core.l_qseq] = 0;
+  for(int i=0; i < bam->core.l_qseq; ++i)
+    (*seq)[i] = nuc_encoding[ bam_seqi(seq_data, i) ];
+  return(seq_l);
+}
+
+size_t bam_qual_p(bam1_t *bam, char **qual, size_t qual_l){
+  if(qual_l < 1 + bam->core.l_qseq){
+    qual_l = 1 + bam->core.l_qseq;
+    *qual = realloc( *qual, qual_l );
+  }
+  (*qual)[ bam->core.l_qseq ] = 0;
+  memcpy( *qual, bam_get_qual(bam), bam->core.l_qseq );
+  return(qual_l);
+}
+
+size_t bam_aux_p(bam1_t *bam, char **aux, size_t buf_l){
+  size_t aux_l = bam_get_l_aux(bam);
+  if(buf_l < 1 + aux_l){
+    buf_l = 1 + aux_l;
+    *aux = realloc( *aux, buf_l );
+  }
+  (*aux)[ aux_l ] = 0;
+  memcpy( *aux, bam_get_aux(bam), aux_l );
+  return(buf_l);
+}
+
+// Appends a character representation of an auxiliary field to a 
+// kstring_t object. kstring_t is an htslib struct.
+// returns: the length of the resulting 0 terminated string.
+// Note that use of kstring_t means a _lot_ of calls to `realloc`
+// and that we have to clear the kstring_t memory after use.
+// The code here is taken more or less directly from 
+// the relevant section of sam_format1_append()
+size_t bam_aux_string(bam1_t *b, kstring_t *str){
+  int r = 0;
+  uint8_t *s, *end;
+  //  const bam1_core_t *c = &b->core;
+
+  s = bam_get_aux(b); // aux
+  end = b->data + b->l_data;
+  
+  while (end - s >= 4) {
+    // only add a tab character if the string has length
+    if(str->l)
+      r |= kputc_('\t', str);
+    if ((s = (uint8_t *)sam_format_aux1(s, s[2], s+3, end, str)) == NULL)
+      goto bad_aux;
+  }
+  r |= kputsn("", 0, str); // nul terminate
+  // here we ignore that, but it is something that should be handled.
+  return(str->l);
+ bad_aux:
+  warning("Corrupted aux data for read %.*s",
+	  b->core.l_qname, bam_get_qname(b));
+  //  errno = EINVAL;
+  return -1;
+}
+
 // A convenience function; creates a VECSXP containing a STRSXP in the first
 // element that can be used with setAttrib for R_DimNamesSymobl when the number 
 // of rows is known.
@@ -161,6 +232,8 @@ SEXP mk_strsxp(const char **words, size_t n){
   return(words_r);
 }
 
+// if index is not found, then warn and set the index to 0
+// but still expect a character of some sort..
 SEXP load_bam(SEXP bam_file_r, SEXP index_file_r){
   if(TYPEOF(bam_file_r) != STRSXP || length(bam_file_r) != 1)
     error("bam_file_r should contain a single string giving the bam file name");
@@ -174,7 +247,8 @@ SEXP load_bam(SEXP bam_file_r, SEXP index_file_r){
     error("Unable to open specified bam file");
   hts_idx_t *index = sam_index_load(sam, index_file);
   if(!index){
-    error("Unable to open index");
+    warning("No index file set; operations requiring index will not be available");
+      //    error("Unable to open index");
   }
   sam_hdr_t *header = sam_hdr_read(sam);
   // Do I need to allocate this on the stack?
@@ -246,6 +320,9 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     // we could be clever here and try to recreate from the protect information
     // but we should think carefully about this
     error("External pointer is NULL");
+  }
+  if(!bam->index){
+    error("External pointer does not contain an index structure");
   }
   if(TYPEOF(region_range_r) != INTSXP || length(region_range_r) != 2)
     error("region_range should be an integer vector of length 2");
@@ -398,6 +475,15 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 	  }
 	}
       }
+      // if an insertion then we need to increment the depth at a single
+      // reference position
+      // WRONG; this is not needed because the next operation will be a match
+      // op starting at the same position. This means that we will overcount the depth.
+      /* if((opt_flag & 4) && bam_cigar_type(cigar[i]) == 2){ */
+      /* 	int o = r_pos - region_range[0]; */
+      /* 	if(o >= 0 && o < region_length) */
+      /* 	  seq_depth[ o ]++; */
+      /* } */
       q_pos += bam_cigar_type(cigar[i]) & 1 ? bam_cigar_oplen( cigar[i] ) : 0;
       r_pos += bam_cigar_type(cigar[i]) & 2 ? bam_cigar_oplen( cigar[i] ) : 0;
       if(bam_cigar_type(cigar[i]) & 2)
@@ -450,6 +536,108 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   }
   free(var_coord.data);
   UNPROTECT(5);
+  return(ret_data);
+}
+
+// Reads from an unindexed sam / bam / cram file
+SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r){
+  // extract_bam_ptr does the error checking and handling
+  struct bam_ptrs *bam = extract_bam_ptr(bam_ptr_r);
+  if(!bam || !bam->sam){
+    // we could be clever here and try to recreate from the protect information
+    // but we should think carefully about this
+    error("External pointer or sam file is NULL");
+  }
+  if(TYPEOF(n_r) != INTSXP || length(n_r) != 1)
+    error("n_r should be an integer vector of length 1");
+  int n=asInteger(n_r);
+  if(n <= 0)
+    error("you must request at least one entry");
+  // To start with to make sure that the function works, simply return the identifiers.
+  // afterwards we can consider more complex options. But for this we mostly will want
+  // the id, flag, cigar, seq and quality.. But we can check that later.
+  SEXP ret_data = PROTECT( allocVector(VECSXP, 5) );
+  // The first element is a single integer counting the number of entries returned:
+  SET_VECTOR_ELT(ret_data, 0, allocVector(INTSXP, 1));
+  int *count = INTEGER(VECTOR_ELT(ret_data, 0));
+  *count = 0;
+  // The following four of these are character vectors: id, seq, qual, aux
+  for(int i=1; i < length(ret_data); ++i)
+    SET_VECTOR_ELT(ret_data, i, allocVector(STRSXP, n));
+  //  int r;  // the return value from sam_read1
+  bam1_t *b = bam_init1();
+  size_t seq_buffer_size = 500;
+  char *seq_buffer = malloc(seq_buffer_size);
+  kstring_t aux_str = KS_INITIALIZE;
+  // size_t aux_str_size = 0;  return value not used.
+  for(int i=0; i < n && sam_read1(bam->sam, bam->header, b) >= 0; ++i){
+    (*count)++;
+    SET_STRING_ELT(VECTOR_ELT(ret_data, 1), i, mkChar( bam_get_qname(b) ));
+    seq_buffer_size = bam_seq_p(b, &seq_buffer, seq_buffer_size);
+    SET_STRING_ELT(VECTOR_ELT(ret_data, 2), i, mkChar( seq_buffer ));
+    seq_buffer_size = bam_qual_p(b, &seq_buffer, seq_buffer_size);
+    SET_STRING_ELT(VECTOR_ELT(ret_data, 3), i, mkChar( seq_buffer ));
+    // not currently making use of the return value. 
+    bam_aux_string(b, &aux_str);
+    SET_STRING_ELT(VECTOR_ELT(ret_data, 4), i, mkChar( aux_str.s ));
+    aux_str.l = 0;
+    aux_str.s[0] = 0;
+    //    seq_buffer_size = bam_aux_p(b, &seq_buffer, seq_buffer_size);    
+    //    SET_STRING_ELT(VECTOR_ELT(ret_data, 3), i, mkChar( seq_buffer ));
+  }
+  free(seq_buffer);
+  free(aux_str.s);
+  bam_destroy1(b);
+  UNPROTECT(1);
+  return(ret_data);
+}
+// what to return depends on the bitwise ret_flag_r
+// 01:   return individual bit counts (vector of size 12)
+// 10:   return a vector of all 4096 different flag values
+// Somewhat counterintuitively the latter is likely to be
+// Regardless, two vectors are returned in any case.
+SEXP sam_flag_stats(SEXP bam_ptr_r, SEXP ret_flag_r){
+  struct bam_ptrs *bam = extract_bam_ptr(bam_ptr_r);
+  if(!bam || !bam->sam){
+    // we could be clever here and try to recreate from the protect information
+    // but we should think carefully about this
+    error("External pointer or sam file is NULL");
+  }
+  if(TYPEOF(ret_flag_r) != INTSXP || length(ret_flag_r) != 1)
+    error("ret_flag_r should be an integer vector of length 1");
+  unsigned int ret_flag = (unsigned int)asInteger(ret_flag_r);
+  if(!(ret_flag & 3))
+    error("Neither bit 1 or 2 set in ret_flag:");
+  // The sam defines 12 different bits; we can return a vector
+  // of the individual bits and a count of all of the complete combinations
+  unsigned int sam_bit_n = 12;
+  unsigned int mask = (1 << sam_bit_n) - 1;
+  int *bit_count = 0;
+  int *flag_count = 0;
+  SEXP ret_data = PROTECT(allocVector(VECSXP, 2));
+  if(ret_flag & 1){
+    SET_VECTOR_ELT( ret_data, 0, allocVector(INTSXP, sam_bit_n));
+    bit_count = INTEGER(VECTOR_ELT( ret_data, 0));
+    memset(bit_count, 0, sizeof(int) * sam_bit_n);
+  }
+  if(ret_flag & 2){
+    SET_VECTOR_ELT( ret_data, 1, allocVector(INTSXP, 1 << sam_bit_n));
+    flag_count = INTEGER(VECTOR_ELT( ret_data, 1));
+    memset(flag_count, 0, sizeof(int) * (1 << sam_bit_n));
+  }
+  // and then go through and count the bits:
+  bam1_t *b = bam_init1();
+  while( sam_read1(bam->sam, bam->header, b) >= 0 ){
+    unsigned int flag = b->core.flag & mask;
+    if(ret_flag & 1){
+      for(unsigned int j=0; j < sam_bit_n; ++j)
+	bit_count[j] += (flag & (1 << j)) ? 1 : 0;
+    }
+    if(ret_flag & 2)
+      flag_count[flag]++;
+  }
+  bam_destroy1(b);
+  UNPROTECT(1);
   return(ret_data);
 }
 
@@ -513,6 +701,8 @@ SEXP target_lengths(SEXP bam_ptr_r){
 static const R_CallMethodDef callMethods[] = {
   {"load_bam", (DL_FUNC)&load_bam, 2},
   {"alignments_region", (DL_FUNC)&alignments_region, 8},
+  {"sam_read_n", (DL_FUNC)&sam_read_n, 2},
+  {"sam_flag_stats", (DL_FUNC)&sam_flag_stats, 2},
   {"target_lengths", (DL_FUNC)&target_lengths, 1},
   {"bam_cigar_str", (DL_FUNC)&bam_cigar_str, 0},
   {"nuc_table", (DL_FUNC)&nuc_table, 0},

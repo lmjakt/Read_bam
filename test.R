@@ -106,3 +106,53 @@ i <- tmp$ops['op',]
 substring(cigar.str, i, i)
 
 
+source('read_bam.R')
+### try an unindexed bam file..
+bam.f <- "test_srt.bam"
+bam <- load.bam(bam.f, "")
+
+tmp <- sam.read.n(bam, 10)
+
+## /bam.f <- "~/genomes/lophius/ont_data/EBP_v14/BF2_27062023/BF2_27062023_dorado_duplex/BF2_dorado_duplex.bam"
+bam.f <- "BF2_dorado_duplex.bam"
+file.exists(bam.f)
+
+bam <- load.bam(bam.f, "")
+
+## flag stats:
+system.time( fstat <- sam.flag.stats(bam, 3) )
+##    user  system elapsed 
+## 191.206   4.670 195.867 
+
+bam <- load.bam(bam.f, "")
+system.time( fstat <- sam.flag.stats(bam, 1) )
+##    user  system elapsed 
+## 185.480   4.784 190.245 
+
+bam <- load.bam(bam.f, "")
+system.time( fstat <- sam.flag.stats(bam, 2) )
+##    user  system elapsed 
+## 184.936   4.568 189.486 
+
+tmp <- list(count=1);
+total <- 0
+system.time(
+    while(tmp[[1]] > 0){
+        tmp <- sam.read.n(bam, 1000)
+        total <- total + tmp[[1]]
+    }
+)
+##    user  system elapsed 
+## 304.975   6.864 311.811 
+## not so bad, compared to the hours of loading fastq.gz
+## that's 5 minutes.
+
+tmp.dx <- lapply(1:5, function(x){
+    tmp <- sam.read.n(bam, 1000)
+## check the dx tag to see if the reads have been given as duplexes:
+    dx <- as.numeric(sub(".*?dx:i:([0-9]).*", "\\1", tmp[[5]]))
+    c(tmp, list('dx'=dx))
+})
+
+tmp1 <- sam.read.n(bam, 100)
+tmp2 <- sam.read.n(bam, 100)

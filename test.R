@@ -109,9 +109,24 @@ substring(cigar.str, i, i)
 source('read_bam.R')
 ### try an unindexed bam file..
 bam.f <- "test_srt.bam"
-bam <- load.bam(bam.f, "")
+bam <- load.bam(bam.f, "test_srt.bam.bai")
 
-tmp <- sam.read.n(bam, 10)
+tmp <- sam.read.n(bam, 10000, ret.f=(2^12-1))
+tlen <- target.lengths( bam )
+
+tlen[ unique(tmp$ref) ]
+
+bam <- set.bam.iterator( bam, "3" )
+tmp <- sam.read.n(bam, 10000, ret.f=(2^12-1))
+tmp$n
+## [1] 903
+
+bam <- clear.bam.iterator(bam)
+tmp <- sam.read.n(bam, 10000, ret.f=(2^12-1))
+tlen <- target.lengths( bam )
+
+
+table(tmp$ref)
 
 ## /bam.f <- "~/genomes/lophius/ont_data/EBP_v14/BF2_27062023/BF2_27062023_dorado_duplex/BF2_dorado_duplex.bam"
 bam.f <- "BF2_dorado_duplex.bam"

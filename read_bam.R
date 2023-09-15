@@ -7,10 +7,25 @@ load.bam <- function(bam, bam.index){
 }
 
 
+set.bam.iterator <- function(bam.ptr, region, range=NULL){
+    if(is.null(range)){
+        tlen = target.lengths(bam.ptr)
+        if(is.na(tlen[region[1]]))
+            stop(paste(region[1], ":no such region"))
+        range=c(1, tlen[region[1]])
+    }
+    .Call("set_iterator", bam.ptr, region, as.integer(range));
+}
+
+clear.bam.iterator <- function(bam.ptr){
+    .Call("clear_iterator", bam.ptr)
+}
+
 ## opt.flag is the bitwise OR of:
 ## 1 return seq_data as a character vector array
 ## 2 return positions that differ from reference; requires that ref.seq is specified
 ## 3 calculate sequencing depth throughout the region
+## 4 construct a cigar string.. 
 ## flag.filter: a vector of two elements, [ required flags, banned flags ]
 ## min.mq = minimum mapping quality
 ## min.ql = minimum query length (as reported in the bam_core field; this is not the
@@ -31,9 +46,42 @@ aligned.region <- function(region, range, bam.ptr, transpose=FALSE, merge=FALSE,
     tmp
 }
 
-sam.read.n <- function(bam.ptr, n){
-    tmp <- .Call("sam_read_n", bam.ptr, as.integer(n))
-    names(tmp) <- c("n", "id", "seq", "qual", "aux");
+## there are 11 mandatory fields in the bam file; This function was initially
+## written to return only id, seq, qual and aux from non-aligned bam files
+## However, it is better to use a flag to define the 12 (11 mandatory + aux)
+## columns.
+## use the following:
+## Bit hxd      dec      field
+## 1     1        1      id
+## 2     2        2      flag
+## 3     4        4      rname (reference name)
+## 4     8        8      pos
+## 5    10       16      mapq
+## 6    20       32      cigar
+## 7    40       64      rnext (reference for mate)
+## 8    80      128      pnext (pos for mate)
+## 9   100      256      tlen (template length can be negative)
+## 10  200      512      seq
+## 11  400     1024      qual
+## 12  800     2048      aux
+## the default flag is: id, seq, qual, aux
+## because I may have code that depends on that. But future code should
+## specify the flag.
+## sel.flags are:
+## 1. f: only include reads with all flags set
+## 2. F: exclude all reads with any flag set
+## 3. min_mapq 
+sam.read.n <- function(bam.ptr, n, ret.f=( 0x1 + 0x200 + 0x400 + 0x800),
+                       sel.flags=c(0, 0, 0), resize=FALSE){
+    tmp <- .Call("sam_read_n", bam.ptr, as.integer(n),
+                 as.integer(ret.f), as.integer(sel.flags))
+##    names(tmp) <- c("n", "id", "seq", "qual", "aux");
+    if(resize){
+        for(i in 2:length(tmp) - 1){
+            if(!is.null(tmp[[i]]))
+                tmp[[i]] <- tmp[[i]][ 1:tmp$n ]
+        }
+    }
     tmp
 }
 
@@ -48,6 +96,7 @@ sam.flag.stats <- function(bam.ptr, ret.flag){
     tmp
 }
 
+## returns a named integer of target lengths
 target.lengths <- function(bam.ptr){
     .Call("target_lengths", bam.ptr)
 }

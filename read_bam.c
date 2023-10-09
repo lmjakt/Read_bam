@@ -541,7 +541,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // flag, pos, mapq, qlen and tlen
   struct i_matrix al_vars = init_i_matrix( 8, init_size );
   int av_column[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  SEXP al_var_dimnames = PROTECT( mk_rownames((const char*[]){"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen", "tlen"}, 8));
+  SEXP al_var_dimnames = PROTECT( mk_rownames((const char*[]){"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen", "qclen"}, 8));
   char *qseq = 0; // use as a temporary variable to hold the address of the query sequence
   while((r=sam_itr_next(bam->sam, b_itr, al)) >= 0){
     uint32_t flag = (uint32_t)al->core.flag;
@@ -585,10 +585,17 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     // 2, 3, 4 are r.end, q.beg, q.end respectively
     av_column[5] = (int)al->core.qual;
     av_column[6] = (int)al->core.l_qseq;
-    av_column[7] = (int)al->core.isize;
+    // It's not actually clear what isize is? Seems to be set to 0
+    // a lot of the time.. set to qcig_length instead
+    // av_column[7] = (int)al->core.isize;
     int q_beg=-1;
     int q_end=0;
+    // calculate the true query length from the cigar string
+    int qcig_length = 0;
     for(int i=0; i < cigar_l; ++i){
+      // if operation is H also increment the qcig_length
+      if( bam_cigar_type(cigar[i]) & 1 || bam_cigar_op( cigar[i] ) == 5 )
+	qcig_length += bam_cigar_oplen( cigar[i] );
       column[1] = bam_cigar_op( cigar[i] ) + 1;
       column[2] = bam_cigar_type(cigar[i]);
       column[3] = r_pos;
@@ -638,6 +645,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     av_column[2] = r_pos;
     av_column[3] = q_beg;
     av_column[4] = q_end;
+    av_column[7] = qcig_length;
     push_column(&al_vars, av_column);
     // qseq may be 0, but that should be safe to free.
     // We only need to free qseq if we did not store it in the str_array_object

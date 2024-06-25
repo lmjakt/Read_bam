@@ -2,6 +2,7 @@
 #include <Rinternals.h>
 #include <string.h>
 #include <htslib/sam.h>
+#include "split_string.h"
 
 // define the bit positions of a set of ret_flag values
 // note that these start at 0, so that they can be used
@@ -922,6 +923,143 @@ SEXP target_lengths(SEXP bam_ptr_r){
   return(t_lengths_r);
 }
 
+// This function extracts the values of specific auxiliar fields
+// from aux strings. This could probably be done more efficiently
+// by using the bam representation and calling the accessor functions
+// defined in htslib; and included in sam.read.n. However, that would
+// require careful reading of the specific libraries again, and it
+// could not be used with arbitrary aux strings obtained from elsewhere.
+// This will return a list with one member for each tag type specified.
+// Each list will be the same length as aux_r, the number of auxiliar strings.
+SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
+  if(TYPEOF(aux_r) != STRSXP || length(aux_r) < 1)
+    error("aux_r must be a string with length of 1 or longer");
+  if(TYPEOF(aux_tags_r) != STRSXP || length(aux_tags_r) < 1)
+    error("aux_tags_r must be a string with length of 1 or longer");
+  if(TYPEOF(aux_types_r) != STRSXP || length(aux_types_r) < 1)
+    error("aux_types_r must be a string with length of 1 or longer");
+  if(length(aux_types_r) != length(aux_tags_r))
+    error("The length of aux_types_r and aux_tags_r must be the same");
+  // tag values should be two characters;
+  // check that this is correct before anything doing anything else:
+  for(int i=0; i < length(aux_tags_r); ++i){
+    if(length(STRING_ELT(aux_tags_r, i)) != 2){
+      Rprintf("Illegal tag: %s\n", CHAR(STRING_ELT(aux_tags_r, i)));
+      error("Illegal tag specified");
+    }
+  }
+  // the types are represented by a single character which
+  // must be one of: A, c, C, s, S, i, I, f, Z, H
+  // where: A single char, c int8, C uint 8, s int16, S uint16, i int32, I uint32, f float (32 bit)
+  // Z: null terminated char array, H: null terminated char array (of Hex representations)
+  // We can distinguish the upper case of all of these by their last 5 bits
+  // which give values of, 3, 19, 9, 6, 26, and 8 respectively.
+  // That means we can check if a type is defined by AND operations on a 32 bit unsigned
+  // integer
+  // note that toupper is equivalent to & 0xDF
+  uint8_t up_mask = 0xDF;
+  // This is with bits 17, 3, 19, 9, 6, 26 and 8 set.
+  uint32_t type_check = 0x020501A4;
+  // to access the upper three bits of a char:
+  uint8_t left_mask = 0xE0;
+  uint8_t left_check = 0x40;
+  // this will give the 5 lower bits
+  // that can be used as bit offset that can be checked with the type_check.
+  uint8_t right_mask = 0x1F;
+  // first go through and check that the types specified are correct. Then go through and
+  // check if the tags are correct (each should be a two letter code).
+  // use an array 
+  char *aux_types = malloc(length(aux_types_r));
+  for(int i=0; i < length(aux_types_r); ++i){
+    SEXP type_r = STRING_ELT(aux_types_r, i);
+    if(length(type_r) != 1){
+      free(aux_types);
+      error("All type specifiers must be single characters");
+    }
+    aux_types[i] = CHAR(type_r)[0] & up_mask; // sets to upper as we don't distinguish
+    // check if it is allowed;
+    if( !(((1 << ((aux_types[i] & right_mask) - 1)) & type_check) && ((left_mask & aux_types[i]) == left_check) ) ){
+      free(aux_types);
+      Rprintf("illegal aux_type: %c\n", aux_types[i]);
+      error("Error illegal aux_type");
+    }
+  }
+  // set up some data structures:
+  SEXP ret_data = PROTECT(allocVector(VECSXP, length(aux_types_r)));
+  for(int i=0; i < length(ret_data); ++i){
+    switch(aux_types[i]){
+    case 'A':
+    case 'C':
+    case 'S':
+    case 'I':
+      SET_VECTOR_ELT(ret_data, i, allocVector(INTSXP, length(aux_r)));
+      break;
+    case 'F':
+      SET_VECTOR_ELT(ret_data, i, allocVector(REALSXP, length(aux_r)));
+      break;
+    default: // this is a pain
+      SET_VECTOR_ELT(ret_data, i, allocVector(STRSXP, length(aux_r)));
+    }
+  }
+  // then go through and allocate the appropriate type of memory; int, double or string
+  // if 
+  // Then go through each aux_string; split on "\t", check if the tag is defined
+  for(int i=0; i < length(aux_r); ++i){
+    const char *aux = CHAR(STRING_ELT(aux_r, i));
+    // This is likely slow since it will make lots of new words.
+    // And will hence allocate lots of new strings. We can make it faster
+    // quite easily by simply defining the offsets and lengths of all terms
+    // instead. But first make it work.
+    unsigned int n = 0;
+    char **terms = split_string(aux, '\t', &n);
+    int *int_values;
+    double *double_values;
+    for(unsigned int j=0; j < n; ++j){
+      // check and then free the word..
+      // the term should be a minimum of length 6
+      // with : at positions 3 and 5 (counting from 1)
+      size_t tl = strlen(terms[j]);
+      if(tl >= 6 && terms[j][2] == ':' && terms[j][4] == ':'){
+	// this is slow as well
+	for(int k=0; k < length(aux_tags_r); ++k){
+	  if(strncmp(CHAR(STRING_ELT(aux_tags_r, k)), terms[j], 2) == 0){
+	    // do something useful depending on if the type
+	    // fits.
+	    if(aux_types[k] == (terms[j][3] & up_mask)){
+	      // Everything fits. Now we need to do something different depending on what the
+	      // type is.
+	      switch(aux_types[k]){
+	      case 'A':
+		int_values = INTEGER(VECTOR_ELT(ret_data, k));
+		int_values[i] = (int)terms[j][5];
+		break;
+	      case 'C':
+	      case 'S':
+	      case 'I':
+		int_values = INTEGER(VECTOR_ELT(ret_data, k));
+		int_values[i] = atoi( terms[j] + 5 );
+		break;
+	      case 'F':
+		double_values = REAL(VECTOR_ELT(ret_data, k));
+		double_values[i] = atof( terms[j] + 5 );
+		break;
+	      default:
+		SET_STRING_ELT( VECTOR_ELT(ret_data, k), i, mkChar(terms[j] + 5));
+	      }
+	    }
+	    break;
+	  }
+	}
+      }
+      free( terms[j] );
+    }
+    free(terms);
+  }
+  free(aux_types);
+  // case then go through and check the values.
+  UNPROTECT(1);
+  return(ret_data);
+}
 
 static const R_CallMethodDef callMethods[] = {
   {"load_bam", (DL_FUNC)&load_bam, 2},
@@ -934,6 +1072,7 @@ static const R_CallMethodDef callMethods[] = {
   {"bam_cigar_str", (DL_FUNC)&bam_cigar_str, 0},
   {"nuc_table", (DL_FUNC)&nuc_table, 0},
   {"bam_flag", (DL_FUNC)&bam_flag, 1},
+  {"extract_aux_tags", (DL_FUNC)&extract_aux_tags, 3},
   {NULL, NULL, 0}
 };
 

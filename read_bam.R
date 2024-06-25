@@ -157,3 +157,14 @@ r.ins <- function(reg, ref.seq, is.t=FALSE, margin=0){
     seq.ins <- substring( ref.seq, r.b, r.e )
     data.frame( al.i=q.i, r.b=r.b, r.e=r.e, q.pos=ops['q0',b], seq=seq.ins, stringsAsFactors=FALSE )
 }
+
+## takes auxiliary strings and converts values to more appropriate values.
+## aux: a character vector of auxiliary strings
+## tags: the tag values that should be extracted
+## types: the data types of those tag values (A, C, S, I, f, Z, H) allowed
+extract.aux <- function(aux, tags, types){
+    tmp <- .Call("extract_aux_tags", aux, tags, types)
+    tmp <- do.call(data.frame, tmp)
+    colnames(tmp) <- tags
+    tmp
+}

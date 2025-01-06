@@ -19,12 +19,19 @@
 #define S_SEQ 9
 #define S_QUAL 10
 #define S_AUX 11
+#define S_CIG_TABLE 12
+
+// The number of rows in an cigar operations table
+#define CIG_OPS_RN 8
+#define OPS_INIT_SIZE 256
+// a global variable; I feel dirty;
+const char* cig_ops_rownames[CIG_OPS_RN] = {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
 
 // the following is not that useful.. 
 // #define BIT_F( F ) ( 1 << F )
 
 // and a vector of return types:
-const unsigned int R_ret_types[12] = {STRSXP, INTSXP, INTSXP, INTSXP, INTSXP, // ID, FLAG, RNAME, POS, MAPG
+const unsigned int R_ret_types[12] = {STRSXP, INTSXP, INTSXP, INTSXP, INTSXP, // ID, FLAG, RNAME, POS, MAPQ
 				      STRSXP, INTSXP, INTSXP, INTSXP, // CIGAR, RNEXT, PNEXT, TLEN
 				      STRSXP, STRSXP, STRSXP}; // SEQ, QUAL, AUX
 
@@ -33,7 +40,8 @@ const unsigned int R_ret_types[12] = {STRSXP, INTSXP, INTSXP, INTSXP, INTSXP, //
 // this is a copy of seq_nt16_str defined as a non null-
 // terminated vector array
 const char *nuc_encoding = "=ACMGRSVTWYHKDBN";
-
+// if we want to reverse complement
+const char *nuc_encoding_rc = "=TGKCYSBAWRDMHVN";
 
 // We want to hold connection data as an external pointer
 // to the relevant R data structures:
@@ -137,6 +145,11 @@ struct i_matrix init_i_matrix(size_t nrow, size_t ncol){
 }
 
 void double_columns( struct i_matrix *m ){
+  if(m->ncol == 0){
+    m->ncol = 2;
+    m->data = malloc(sizeof(int) * m->nrow * m->ncol);
+    return;
+  }
   int *old = m->data;
   size_t sz = sizeof(int) * m->nrow * m->ncol;
   m->data = malloc( 2 * sz );
@@ -284,6 +297,60 @@ size_t bam_aux_string(bam1_t *b, kstring_t *str){
 	  b->core.l_qname, bam_get_qname(b));
   //  errno = EINVAL;
   return -1;
+}
+
+// Parse the cigar data and extend:
+// A cigar operations table containing the operations, their lengths and
+//     the query and reference positions (i.e. how they align)
+// Sets q_length the query length calculated from the cigar string; this can differ
+//     from that given in the bam1_t data struct due to hard clipping.
+//     Similarly, the beginning and end positions of the original query can differ
+//     So the function also sets q_beg and q_end. These refer to the query
+//     prior to any hard clipping.
+// 
+// In the future I might add functionality that also identifies sequence
+// differences and parses MM and ML data; however, it is difficult to do this
+// without making spaghetti code;
+//
+// WARNING: this function counts from 0, not 1; this is different from
+//          what I did in aligned_region.
+// It is to make it easier to reuse the data within this data.
+// Using this, I should be able to subset sequences 
+void cigar_to_table(bam1_t *al, int al_i, struct i_matrix *al_coord, int *qcig_length, int *q_beg, int *q_end){
+  // rows are: {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
+  int column[CIG_OPS_RN] = {0, 0, 0, 0, 0, 0, 0, 0};
+  column[0] = al_i;
+  uint32_t *cigar = bam_get_cigar(al);
+  int32_t cigar_l = al->core.n_cigar;
+  int r_pos = (int)al->core.pos;
+  int q_pos = 0;
+  *qcig_length = 0;
+  *q_beg = 1;
+  *q_end = 0;
+  // if we have hard clipping set q_beg appropriately:
+  if(cigar_l && bam_cigar_op(cigar[0]) == 5)
+    *q_beg = bam_cigar_oplen(cigar[0]);
+  
+  for(int i=0; i < cigar_l; ++i){
+    // if operation is H also increment the qcig_length
+    int type = bam_cigar_type(cigar[i]);
+    int op = bam_cigar_op(cigar[i]);
+    int op_length = bam_cigar_oplen( cigar[i] );
+    if( type & 1 || op == 5 )
+      *qcig_length += op_length;
+    column[1] = op;
+    column[2] = type;
+    column[3] = r_pos;
+    column[4] = q_pos;
+    q_pos += type & 1 ? op_length : 0;
+    r_pos += type & 2 ? op_length : 0;
+    if(type & 2)
+      *q_end = q_pos;
+    column[5] = r_pos;
+    column[6] = q_pos;
+    column[7] = op_length;
+    push_column( al_coord, column );
+  }
 }
 
 // A convenience function; creates a VECSXP containing a STRSXP in the first
@@ -509,7 +576,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   }
   
   // and then we do the whole business of getting the reads..
-  // We want to change this to use sam_itr_queryi, so that we specify the region
+  // We use sam_itr_queryi, so that we can specify the region
   // numerically thus also allowing the same function to return the sequence depth for the region.
   hts_itr_t *b_itr = sam_itr_queryi(bam->index, target_id, region_range[0], region_range[1]);
   // hts_itr_destroy( ) not called on this anywhere: suggests we have a memory leak.
@@ -629,11 +696,6 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       // reference position
       // WRONG; this is not needed because the next operation will be a match
       // op starting at the same position. This means that we will overcount the depth.
-      /* if((opt_flag & 4) && bam_cigar_type(cigar[i]) == 2){ */
-      /* 	int o = r_pos - region_range[0]; */
-      /* 	if(o >= 0 && o < region_length) */
-      /* 	  seq_depth[ o ]++; */
-      /* } */
       q_pos += bam_cigar_type(cigar[i]) & 1 ? bam_cigar_oplen( cigar[i] ) : 0;
       r_pos += bam_cigar_type(cigar[i]) & 2 ? bam_cigar_oplen( cigar[i] ) : 0;
       if(bam_cigar_type(cigar[i]) & 2)
@@ -738,20 +800,25 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
   // the id, flag, cigar, seq and quality.. But we can check that later.
   //  SEXP ret_data = PROTECT( allocVector(VECSXP, 5) );
   // n, the number of reads obtained, and then the 12 fields of the sam forma;
-  SEXP ret_data_names = PROTECT( mk_strsxp( (const char*[]){"id", "flag", "ref", "pos", "mapq", 
-	  "cigar", "ref.m", "pos.m", "tlen", "seq", "qual", "aux", "n"}, 13));
+  SEXP ret_data_names = PROTECT( mk_strsxp( (const char*[]){"id", "flag", "ref", "pos", "mapq",
+							      "cigar", "ref.m", "pos.m", "tlen",
+							      "seq", "qual", "aux", "ops", "q.inf", "n"}, 15));
   SEXP ret_data = PROTECT( allocVector(VECSXP, length(ret_data_names)) );
   setAttrib( ret_data, R_NamesSymbol, ret_data_names );
+  // The last element is a single integer counting the number of entries returned:
+  SET_VECTOR_ELT(ret_data, length(ret_data_names)-1, allocVector(INTSXP, 1));
   unsigned int flag = 1;
-  for(int i=0; i < length(ret_data)-1; ++i){
+  // elements up to S_AUX are simple vectors with type defined by R_ret_types
+  for(int i=0; i <= S_AUX; ++i){
     if(ret_flag & flag)
       SET_VECTOR_ELT(ret_data, i, allocVector( R_ret_types[i], n ));
     flag = flag << 1;
   }
-  // The last element is a single integer counting the number of entries returned:
-  SET_VECTOR_ELT(ret_data, length(ret_data)-1, allocVector(INTSXP, 1));
-  int *count = INTEGER(VECTOR_ELT(ret_data, length(ret_data)-1));
+  int *count = INTEGER(VECTOR_ELT(ret_data, length(ret_data_names)-1));
   *count = 0;
+  // The last element may be a matrix, if specified. Otherwise left as NULL.
+  // But we have to copy the matrix as it contains all the cigar operations
+  // and these are of unknown length;
   // see top of the file for what these are.. 
   // The following four of these are character vectors: id, seq, qual, aux
   /* for(int i=1; i < length(ret_data); ++i) */
@@ -761,10 +828,20 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
   size_t seq_buffer_size = 500;
   char *seq_buffer = malloc(seq_buffer_size);
   kstring_t aux_str = KS_INITIALIZE;
+  // If S_CIG_TABLE is set, then initialise to i_matrix arrays;
+  // one will hold q_info (the actual query lengths, beg and end positions before clipping)
+  // and the other will hold the cigar operations in a table of unknown length;
+  int ret_cig_ops = ret_flag & (1 << S_CIG_TABLE);
+  struct i_matrix al_coord = init_i_matrix(CIG_OPS_RN, (ret_cig_ops ? OPS_INIT_SIZE : 0));
+  // they query_info will hold the q_length, q_cig_length, q_beg, q_end. (possibly also
+  struct i_matrix query_info = init_i_matrix(4, (ret_cig_ops ? n : 0));
+  // We should then free the al_coord.data query_info.data after copying to an R data
+  // structure.
   // the initial size should probably be exposed to the user
   struct cigar_string cigar = cigar_string_init(256);
   // size_t aux_str_size = 0;  return value not used.
   //  for(int i=0; i < n && sam_read1(bam->sam, bam->header, b) >= 0; ++i){
+  int qcig_length, q_beg, q_end;
   while( (*count) < n && read_next_entry(bam, b) >= 0){
     //  for(int i=0; i < n && read_next_entry(bam, b) >= 0; ++i){
     if( (f_flag & b->core.flag) != f_flag || (F_flag & b->core.flag) > 0 || b->core.qual < min_q )
@@ -806,12 +883,26 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
       aux_str.l = 0;
       aux_str.s[0] = 0;
     }
-    //    seq_buffer_size = bam_aux_p(b, &seq_buffer, seq_buffer_size);    
-    //    SET_STRING_ELT(VECTOR_ELT(ret_data, 3), i, mkChar( seq_buffer ));
+    if(ret_flag & (1 << S_CIG_TABLE)){
+      cigar_to_table(b, 1+(*count), &al_coord, &qcig_length, &q_beg, &q_end);
+      push_column(&query_info, (int[]){ b->core.l_qseq, qcig_length, q_beg, q_end });
+    }
     (*count)++;
+  }
+  // if S_CIG_TABLE, make the appropriate data structures:
+  if(ret_flag & (1 << S_CIG_TABLE)){
+    SET_VECTOR_ELT( ret_data, S_CIG_TABLE, allocMatrix(INTSXP, al_coord.nrow, al_coord.col) );
+    setAttrib(VECTOR_ELT(ret_data, S_CIG_TABLE), R_DimNamesSymbol, mk_rownames(cig_ops_rownames, CIG_OPS_RN));
+    SET_VECTOR_ELT( ret_data, S_CIG_TABLE+1, allocMatrix(INTSXP, query_info.nrow, query_info.col) );
+    setAttrib(VECTOR_ELT(ret_data, S_CIG_TABLE+1), R_DimNamesSymbol,
+	      mk_rownames((const char*[]){"qlen", "q.cigl", "q.beg", "q.end"}, 4));
+    memcpy( INTEGER(VECTOR_ELT(ret_data, S_CIG_TABLE)), al_coord.data, sizeof(int) * al_coord.nrow * al_coord.col );
+    memcpy( INTEGER(VECTOR_ELT(ret_data, S_CIG_TABLE+1)), query_info.data, sizeof(int) * query_info.nrow * query_info.col );
   }
   free(seq_buffer);
   free(aux_str.s);
+  free(al_coord.data);
+  free(query_info.data);
   cigar_string_free( &cigar );
   bam_destroy1(b);
   UNPROTECT(2);

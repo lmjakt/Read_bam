@@ -65,21 +65,29 @@ aligned.region <- function(region, range, bam.ptr, transpose=FALSE, merge=FALSE,
 ## 11  400     1024      qual
 ## 12  800     2048      aux
 ## the default flag is: id, seq, qual, aux
-## because I may have code that depends on that. But future code should
-## specify the flag.
+## 13 1000     4096      cigar_operations
+## if the 13th bit is set, then the cigar string will be parsed and
+## a table containing the operations, and a table containing 
+## additional query information will be returned (ops and q.inf)
+##
 ## sel.flags are:
 ## 1. f: only include reads with all flags set
 ## 2. F: exclude all reads with any flag set
 ## 3. min_mapq 
 sam.read.n <- function(bam.ptr, n, ret.f=( 0x1 + 0x200 + 0x400 + 0x800),
-                       sel.flags=c(0, 0, 0), resize=FALSE){
+                       sel.flags=c(0, 0, 0), resize=FALSE, transpose=FALSE){
     tmp <- .Call("sam_read_n", bam.ptr, as.integer(n),
                  as.integer(ret.f), as.integer(sel.flags))
-##    names(tmp) <- c("n", "id", "seq", "qual", "aux");
     if(resize){
         for(i in 2:length(tmp) - 1){
-            if(!is.null(tmp[[i]]))
+            if(!is.null(tmp[[i]]) && is.vector(tmp[[i]]))
                 tmp[[i]] <- tmp[[i]][ 1:tmp$n ]
+        }
+    }
+    if(transpose){
+        for(i in 1:length(tmp)){
+            if(is.matrix(tmp[[i]]))
+                tmp[[i]] <- t(tmp[[i]])
         }
     }
     tmp
@@ -167,4 +175,10 @@ extract.aux <- function(aux, tags, types){
     tmp <- do.call(data.frame, tmp)
     colnames(tmp) <- tags
     tmp
+}
+
+
+## R function to parse the MM and ML
+parse.MM <- function(MM, ML){
+    if(grepl(M
 }

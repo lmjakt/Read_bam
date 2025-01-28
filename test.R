@@ -11,7 +11,6 @@ read.fasta <- function(fn){
     names(seq) <- sub("^>([^ ]+).+", "\\1", lines[id.i])
     seq
 }
-
 ref.seq <- read.fasta("KI270733.fasta")
 
 bam.f <- "test_srt.bam"
@@ -171,3 +170,32 @@ tmp.dx <- lapply(1:5, function(x){
 
 tmp1 <- sam.read.n(bam, 100)
 tmp2 <- sam.read.n(bam, 100)
+
+
+#### test bcf reading:
+source('read_bam.R')
+bcf <- load.bcf("Astac_LS420026.bcf", "Astac_LS420026.bcf.csi")
+tmp <- bcf.read.n(bcf, 10, c("GT", "AD", "DP", "GQ"))
+
+
+## test of MM aux parsing;
+source('read_bam.R')
+bam <- load.bam("rDNA_r5.bam")
+rflag <- 0x1 + 0x2 + 0x4 + 0x8 + 0x10 + 0x20 + 0x200 + 0x800 + 0x1000 + 0x4000
+##rflag <-  bitwShiftL( 1, 15 ) - 1
+tmp.1 <- sam.read.n(bam, 1000, ret=rflag)
+
+## for convenience:
+tmp.1$mm <- t(tmp.1$mm)
+## check the positions
+tmp.pos <- with(tmp.1, tapply(1:nrow(mm), mm[,'al.i'], function(i){ substring( seq[ mm[i,'al.i'] ], mm[i,'q.pos'], mm[i,'q.pos'] + 1 ) }))
+table( unlist(tmp.pos) )
+##     CG 
+## 798828 
+## These are all CG. That suggests that we have parsed the file OK.
+## but:
+range(tmp.1$mm[,'mod.l'])
+## 0 255 
+hist(tmp.1$mm[,'mod.l'])
+## the vast majority of CpGs look unmethylated. 
+

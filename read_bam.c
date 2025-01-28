@@ -2,24 +2,28 @@
 #include <Rinternals.h>
 #include <string.h>
 #include <htslib/sam.h>
+#include <htslib/vcf.h>
 #include "split_string.h"
+
+// This provides acces to bam / sam and bcf / vcf files.
 
 // define the bit positions of a set of ret_flag values
 // note that these start at 0, so that they can be used
 // by: 1 << S_QID  => 0, 1 << S_FLAG => 2, etc..
-#define S_QID 0
-#define S_FLAG 1
-#define S_RNAME 2
-#define S_POS 3
-#define S_MAPQ 4
-#define S_CIGAR 5
-#define S_RNEXT 6
-#define S_PNEXT 7
-#define S_TLEN 8
-#define S_SEQ 9
-#define S_QUAL 10
-#define S_AUX 11
-#define S_CIG_TABLE 12
+#define S_QID 0 // 0x1
+#define S_FLAG 1 // 0x2
+#define S_RNAME 2  // 0x4
+#define S_POS 3  // 0x8
+#define S_MAPQ 4 // 0x10
+#define S_CIGAR 5 // 0x20
+#define S_RNEXT 6 // 0x40
+#define S_PNEXT 7 // 0x80
+#define S_TLEN 8  // 0x100
+#define S_SEQ 9   // 0x200
+#define S_QUAL 10  // 0x400
+#define S_AUX 11 // 0x800
+#define S_CIG_TABLE 12  // 0x1000
+#define S_AUX_MM 14  // 0x2000
 
 // The number of rows in an cigar operations table
 #define CIG_OPS_RN 8
@@ -27,10 +31,19 @@
 // a global variable; I feel dirty;
 const char* cig_ops_rownames[CIG_OPS_RN] = {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
 
-// the following is not that useful.. 
+#define MM_INFO_RN 6
+const char* mm_info_rownames[MM_INFO_RN] = {"al.i", "q.pos", "mod", "mod.n", "mod.l", "r.pos"};
+
+// the following is not that useful..
 // #define BIT_F( F ) ( 1 << F )
+// but maybe if we called it:
+// #define SET_F( F ) ( 1 << F )
+// to set a bit. Or maybe this is more reasonable:
+// #define SET_F( V, F ) ( (V | (1 << F)) )
 
 // and a vector of return types:
+// seems reasonable to define the names of these here as well.
+// since these depend on each other.
 const unsigned int R_ret_types[12] = {STRSXP, INTSXP, INTSXP, INTSXP, INTSXP, // ID, FLAG, RNAME, POS, MAPQ
 				      STRSXP, INTSXP, INTSXP, INTSXP, // CIGAR, RNEXT, PNEXT, TLEN
 				      STRSXP, STRSXP, STRSXP}; // SEQ, QUAL, AUX
@@ -55,6 +68,14 @@ struct bam_ptrs {
 };
 // that will be held as an external pointer
 // Which should be cleaned up
+
+struct bcf_ptrs {
+  vcfFile *vcf;  // can be bcf or vcf
+  bcf_hdr_t *header;
+  // the index only works with bcf; not sure about the iterator;
+  hts_idx_t *index;
+  hts_itr_t *b_itr;
+};
 
 // with functions to read from a bam1_t pointer
 struct cigar_string {
@@ -110,6 +131,27 @@ static void finalise_bam_ptrs(SEXP ptr_r){
   // destroy the various indices
   if( ptr->header )
     sam_hdr_destroy( ptr->header );
+  if( ptr->index )
+    hts_idx_destroy( ptr->index );
+  if( ptr->b_itr )
+    hts_itr_destroy( ptr->b_itr );
+  // It is _not_ safe to: 
+  //  free( ptr->sam ); 
+  // and there is no hts_file_destroy / sam_file_destroy
+  free( ptr ); // ??
+  R_ClearExternalPtr(ptr_r);
+}
+
+// It might be possible to finalise_bam_ptrs to handle bcf_ptrs, since the
+// objects are quite similar. But it seems clearer to have a separate function
+// call.
+static void finalise_bcf_ptrs(SEXP ptr_r){
+  if(!R_ExternalPtrAddr(ptr_r))  // if already NULL, do nothing
+    return;
+  struct bcf_ptrs *ptr = (struct bcf_ptrs*)R_ExternalPtrAddr(ptr_r);
+  // destroy the various indices
+  if( ptr->header )
+    bcf_hdr_destroy( ptr->header );
   if( ptr->index )
     hts_idx_destroy( ptr->index );
   if( ptr->b_itr )
@@ -233,7 +275,7 @@ char *bam_seq(bam1_t *bam){
 // Avoid malloc if possible:
 // but note that whatever we do, we end up copying data too much
 // Note that we could probably use, a single call of `nibble2base`
-// to get the sequence.
+// to get the sequence. But it doesn't look like nibble2base is exported
 size_t bam_seq_p(bam1_t *bam, char **seq, size_t seq_l){
   if(seq_l < 1 + bam->core.l_qseq){
     seq_l = 1 + bam->core.l_qseq;
@@ -297,6 +339,209 @@ size_t bam_aux_string(bam1_t *b, kstring_t *str){
 	  b->core.l_qname, bam_get_qname(b));
   //  errno = EINVAL;
   return -1;
+}
+
+// helper function for parse_MM_string
+// determines the modification code; sets the modification indicated
+// as an unsigned integer made by combining up to four modifications.
+// returns a pointer to where the data start. That is, after
+// the first comma. Also sets the char skip_info to "?" or "."
+// of ',' if not defined.
+//
+// *data should point to the first character of the modification code
+//  that comes after the +/- indication.
+// returns 0 on 
+uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_info){
+  *mod_code = 0;
+  *mod_n = 0;
+  *skip_info = ',';
+  size_t i=0;
+  while(data[i] && data[i] != '?' && data[i] != '.' && data[i] != ','){
+    ++i;
+  }
+  if(data[i] == 0 || i == 0){
+    warning("Found end of string in MM header");
+    return(0);
+  }
+  if(i > 4){
+    warning("No more than for modifications allowed");
+    return(0);
+  }
+  *skip_info = data[i];
+  if(data[0] >= '0' & data[0] <= '9'){
+    *mod_n = 1;
+    *mod_code = atoi( data );
+  }else{
+    *mod_n = i;
+    for(size_t j=0; j < i; ++j)
+      *mod_code |= (((uint32_t)data[j]) << (j * 8));
+  }
+  if(data[i] == ',')
+    return( data + i + 1 );
+  return( data + i + 2 );
+}
+
+// parse MM AND ML strings; fill a  matrix with values;
+// Unfortunately we have to parse the complete auxiliary information as the
+// information can be interleaved or in serial. If interleaved need to know
+// a multiplier; if in serial then the mapping to the qualities is straightforward
+// but we then need to calculate the query position repeatedly.
+// 
+// s is 0 or a position in the bam_aux_string (ideally where ML starts)
+// if 0, it will be set to the beginning of the AU data;
+// This function only supports the identification of a single merged string that
+// can be used for several modifications.
+//
+// INITIAL LIMITATION: to simplify initial implementation, this will only take
+// forward reads to start with. Reverse complemented ones have to be read backwards.
+//
+// Ideally this function would also parse the cigar string in order to directly
+// give the reference position. This is not super easy to do elegantly;
+// Having a helper function that does something like:
+// query_to_ref(cigar, cigar_pos)
+// that moves to the next cigar position when needed to might make the most sense
+void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i){
+  // mod_data should have 6 rows; these are
+  // al_i, query_pos, mod_code, mod_n, mod_likelihood, ref_pos
+  // This is very wasteful; we could get rid of al_i and return as elements of a list instead
+  // but that would just move the problem downstream.
+  //
+  if(mod_data->nrow != 6){
+    warning("parse_MM_string: mod_data should have 6 rows");
+    return;
+  }
+  int mod_data_begin = mod_data->col; // in order to check that the qualities correspond as they should.
+  // return if reverse complemented or if hard clipped. With hard clipping we have
+  // no means of identifying the locations in the sequence.
+  uint32_t *cigar = bam_get_cigar(b);
+  if(bam_cigar_op(cigar[0]) == BAM_CHARD_CLIP){ // this is just an & BAM_CIGAR_MASK
+    warning("MM parsing not possible for hard clipped sequences");
+    return;
+  }
+  if( b->core.flag & 16 ){
+    warning("MM parsing not implemented for reversed sequences");
+    return;
+  }
+  // The key, type and tag can be obtained from: s - 2, *s and s+1
+  // that is to say, that the complete field starts at s -2
+  // since we need the key and type we simply subtract 2 from s.
+  if(s == 0)
+    s = bam_aux_first(b) - 2 ;
+  uint8_t *end = b->data + b->l_data;
+  short MM = *((short*)"MM");
+  short ML = *((short*)"ML");
+  uint8_t *mm = 0;
+  uint8_t *ml = 0;
+  // I've not found the documentation for 0xfffffffffffffffe,
+  // but this appears to be some form of special meaning.
+  while(s && s != (uint8_t*)0xfffffffffffffffe){
+    if(*(short*)s == MM)
+      mm = s;
+    if(*(short*)s == ML)
+      ml = s;
+    s = bam_aux_next(b, s+2) - 2;
+  }
+  if(mm == 0){
+    // either some error, or no data; note that ml, is optional.
+    // we should consider checking errno; if EINVAL, then data is corrupt.
+    return;
+  }
+  // the type for MM should be Z. We don't know how many positions we are going
+  // to parse; 
+  // the type for ML should be B, with C, and a 4 bit count 
+  // The mm : "MMZ" Followed by:
+  // ([ACGTUN][-+]([a-z]+|[0-9]+)[.?]?(,[0-9]+)*;)*
+  if(mm[2] != 'Z'){
+    warning("Did not find Z after MM");
+    return;
+  }
+  char nuc = mm[3];
+  char strand = mm[4];
+  // determine how many modifications are related to each entry
+  uint32_t mod_code;
+  char skip_info;
+  int mod_n;
+  uint8_t *data = get_ml_code(mm + 5, &mod_code, &mod_n, &skip_info);
+  // then parse the positions of the code.
+  // Until
+  //     *data == 0       or
+  //     *data == ';'
+  uint8_t *seq_data = bam_get_seq(b);
+  size_t seq_i = 0;
+  size_t seql = b->core.l_qseq;
+  while(data && *data){
+    int nb = atoi(data);
+    // then process the query sequence to find the query position
+    int base_count = 0;
+    if(nuc == 'N'){
+      seq_i = seq_i + nb;
+    }else{
+      while(seq_i < seql && base_count <= nb){
+	if( nuc_encoding[ bam_seqi(seq_data, seq_i) ] == nuc )
+	  ++base_count;
+	++seq_i;
+      }
+    }
+    if(seq_i >= seql){
+      warning("position exceeded sequence in %s %d --> %ld >= %ld", bam_get_qname(b), nb, seq_i, seql);
+      break;
+    }
+    // At this point the base at seq_i should be nuc; and should
+    // be the one for which we have modification data. 
+    // add a column to a table with the following rows:
+    // alignment row, mod_code, skip_info, nskip
+    // the nskip is then changed to the likelihood value from the ML table
+    push_column( mod_data, (int[]){al_i, (int)seq_i, (int)mod_code, mod_n, 0, 0 } );
+    // find the comma or the semicolon
+    while(*data && *data >= '0' && *data <= '9' )
+      ++data;
+    if(*data == ';'){
+        nuc = data[1];
+	strand = data[2];
+	data = get_ml_code(data+3, &mod_code, &mod_n, &skip_info);
+	seq_i = 0;
+	continue;
+    }
+    ++data;
+  }
+  // if ml is 0, then we can't do much more
+  if(ml == 0)
+    return;
+  // mm is encoded as ML:B:C, that is as single bytes; we may have more than one if
+  // mod_n > 1. Should not be more than 0.
+  if(ml[2] != 'B'){
+    warning("Expected B in ML auxiliary data");
+    return;
+  }
+  if(ml[3] != 'C'){
+    warning("Exptected a C in ML auxiliary data but got %c", ml[3]);
+    return;
+  }
+  uint32_t ml_count = *((int32_t*)(ml + 4));
+  // we should check if this corresponds to our expectation; we need to keep a count
+  // of things above to check this.
+  uint32_t i=0;
+  int col = mod_data_begin;
+  uint8_t *qual = ml + 8;
+  while(i < ml_count){
+    if(col >= mod_data->col){
+      warning("exceeded the number of columns in mod_data");
+      break;
+    }
+    int *col_data = mod_data->data + col * mod_data->nrow;
+    for(int j=0; j < col_data[3]; ++j){
+      col_data[ 4 ] |= (((uint32_t)(qual[i])) << (j*8));
+      ++i;
+    }
+    //    col_data[4] = (int)col_data[4];
+    ++col;
+  }
+  // At this point we have certain expectations. For example
+  // col should be equal to mod_data->col.
+  if( col != mod_data->col ){
+    warning("col %d is not equal to mod_data->col %ld", col, mod_data->col);
+  }
+  return;
 }
 
 // Parse the cigar data and extend:
@@ -412,11 +657,63 @@ SEXP load_bam(SEXP bam_file_r, SEXP index_file_r){
   return(ptr_r);
 }
 
+// This is almost identical to load_bam; we should consider if we can
+// refactor into a single function that can produce both.
+// In particular we note that bcf_open and bam_open are both
+// just typedefs of hts_open. However, that could change.
+SEXP load_bcf(SEXP bcf_file_r, SEXP index_file_r){
+  if(TYPEOF(bcf_file_r) != STRSXP || length(bcf_file_r) != 1)
+    error("bcf_file_r should contain a single string giving the bam file name");
+  if(TYPEOF(index_file_r) != STRSXP || length(index_file_r) != 1)
+    error("index_file_r should contain a single string giving the name of the bam index file");
+  const char *bcf_file = CHAR(STRING_ELT( bcf_file_r, 0 ));
+  const char *index_file = CHAR(STRING_ELT( index_file_r, 0 ));
+  // make a bam_ptrs and load files and indices before returning these..
+  // note that a vcfFile is a htsFile, but there bcfFile is not defined.
+  vcfFile *vcf = bcf_open( bcf_file, "r" );
+  if(!vcf)
+    error("Unable to open specified bcf / vcf file");
+  hts_idx_t *index = bcf_index_load2(bcf_file, index_file);
+  if(!index){
+    warning("No index file set; operations requiring index will not be available");
+  }
+  bcf_hdr_t *header = bcf_hdr_read(vcf);
+  ////////// temporary block ////////////////////
+  // look at the header structure a bit .. //////
+  // This is just 0, 1, and 2.
+  // We don't need to do this; we can use, "bcf_get_fmt( ... )
+  // for each line. That may be a bit slower than pre-defining an array.
+  /* int data_types[] = {BCF_DT_ID, BCF_DT_CTG, BCF_DT_SAMPLE}; */
+  /* for(int i=0; i < 3; ++i){ */
+  /*   for(int j=0; j < header->n[ data_types[i] ]; ++j){ */
+  /*     Rprintf("\t%d : %s", j, header->id[data_types[i]][j].key); */
+  /*   } */
+  /*   Rprintf("\n"); */
+  /* } */
+  ///////////////////////////////////////////
+  /// end of temp block.... ////////////////
+  struct bcf_ptrs *ptr = malloc( sizeof(struct bcf_ptrs) );
+  ptr->vcf = vcf;
+  ptr->header = header;
+  ptr->index = index;
+  ptr->b_itr = 0;  // to set an iterator we have to make a range query.. 
+  // create an external pointer with suitable tag and protect?
+  SEXP tag = PROTECT( allocVector(STRSXP, 1) );
+  SET_STRING_ELT( tag, 0, mkChar("bcf_ptrs") );
+  // I'm not quite suire of the prot field, but might be useful
+  SEXP prot = PROTECT( allocVector(STRSXP, 2) );
+  SET_STRING_ELT( prot, 0, STRING_ELT(bcf_file_r, 0));
+  SET_STRING_ELT( prot, 1, STRING_ELT(index_file_r, 0));
+  SEXP ptr_r = PROTECT( R_MakeExternalPtr(ptr, tag, prot) );
+  R_RegisterCFinalizerEx(ptr_r, finalise_bcf_ptrs, TRUE);
+  UNPROTECT(3);
+  return(ptr_r);
+}
+
 struct bam_ptrs* extract_bam_ptr(SEXP bam_ptr_r){
   if(TYPEOF(bam_ptr_r) != EXTPTRSXP)
     error("bam_ptr_r should be an external pointer");
   SEXP bam_tag = PROTECT(R_ExternalPtrTag(bam_ptr_r));
-  //  SEXP bam_prot = PROTECT(R_ExternalPtrProtected(bam_ptr_r));
   // check the tag;
   if(TYPEOF(bam_tag) != STRSXP || length(bam_tag) != 1 || strcmp( CHAR(STRING_ELT(bam_tag, 0)), "bam_ptrs")){
     UNPROTECT(1);
@@ -427,6 +724,39 @@ struct bam_ptrs* extract_bam_ptr(SEXP bam_ptr_r){
   UNPROTECT(1);
   return(bam); // which should be checked by the caller
 }
+
+struct bcf_ptrs* extract_bcf_ptr(SEXP bcf_ptr_r){
+  if(TYPEOF(bcf_ptr_r) != EXTPTRSXP)
+    error("bcf_ptr_r should be an external pointer");
+  SEXP bcf_tag = PROTECT(R_ExternalPtrTag(bcf_ptr_r));
+  // check the tag;
+  if(TYPEOF(bcf_tag) != STRSXP || length(bcf_tag) != 1 || strcmp( CHAR(STRING_ELT(bcf_tag, 0)), "bcf_ptrs")){
+    UNPROTECT(1);
+    error("External pointer has incorrect tag");
+  }
+  struct bcf_ptrs *bcf = (struct bcf_ptrs*)R_ExternalPtrAddr(bcf_ptr_r);
+  UNPROTECT(1);
+  return(bcf); // which should be checked by the caller
+}
+
+// returns 0 on error; Does not call error directly.
+void *extract_ptr(SEXP ptr_r, const char* tag){
+  if(TYPEOF(ptr_r) != EXTPTRSXP){
+    warning("attempt to extract pointer from non pointer type");
+    return(0);
+  }
+  SEXP tag_r = PROTECT(R_ExternalPtrTag(ptr_r));
+  // check the tag;
+  if(TYPEOF(tag_r) != STRSXP || length(tag_r) != 1 || strcmp( CHAR(STRING_ELT(tag_r, 0)), tag)){
+    UNPROTECT(1);
+    warning("External pointer has incorrect tag");
+    return(0);
+  }
+  void *ptr = R_ExternalPtrAddr(ptr_r);
+  UNPROTECT(1);
+  return(ptr); // which should be checked by the caller
+}
+
 
 // Set an iterator for a specific region of a reference genome
 // bam_ptr_r is an external pointer to a bam_ptrs pointer
@@ -802,7 +1132,7 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
   // n, the number of reads obtained, and then the 12 fields of the sam forma;
   SEXP ret_data_names = PROTECT( mk_strsxp( (const char*[]){"id", "flag", "ref", "pos", "mapq",
 							      "cigar", "ref.m", "pos.m", "tlen",
-							      "seq", "qual", "aux", "ops", "q.inf", "n"}, 15));
+							      "seq", "qual", "aux", "ops", "q.inf", "mm", "n"}, 16));
   SEXP ret_data = PROTECT( allocVector(VECSXP, length(ret_data_names)) );
   setAttrib( ret_data, R_NamesSymbol, ret_data_names );
   // The last element is a single integer counting the number of entries returned:
@@ -836,6 +1166,10 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
   // they query_info will hold the q_length, q_cig_length, q_beg, q_end. (possibly also
   struct i_matrix query_info = init_i_matrix(4, (ret_cig_ops ? n : 0));
   // We should then free the al_coord.data query_info.data after copying to an R data
+  // If S_AUX_MM specified, then parse MM information into an i_matrix that will need to be copied.
+  // the 6 rows of the i_matrix are: al_i, query_pos, mod_code, mod_n, mod_likelihood, ref_pos
+
+  struct i_matrix mm_info = init_i_matrix(MM_INFO_RN, (ret_flag & (1 << S_AUX_MM)) ? n : 0);
   // structure.
   // the initial size should probably be exposed to the user
   struct cigar_string cigar = cigar_string_init(256);
@@ -887,6 +1221,9 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
       cigar_to_table(b, 1+(*count), &al_coord, &qcig_length, &q_beg, &q_end);
       push_column(&query_info, (int[]){ b->core.l_qseq, qcig_length, q_beg, q_end });
     }
+    if(ret_flag & (1 << S_AUX_MM)){
+      parse_MM_string(b, 0, &mm_info, 1+(*count));
+    }
     (*count)++;
   }
   // if S_CIG_TABLE, make the appropriate data structures:
@@ -899,15 +1236,222 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
     memcpy( INTEGER(VECTOR_ELT(ret_data, S_CIG_TABLE)), al_coord.data, sizeof(int) * al_coord.nrow * al_coord.col );
     memcpy( INTEGER(VECTOR_ELT(ret_data, S_CIG_TABLE+1)), query_info.data, sizeof(int) * query_info.nrow * query_info.col );
   }
+  if(ret_flag & (1 << S_AUX_MM)){
+    SET_VECTOR_ELT( ret_data, S_AUX_MM, allocMatrix(INTSXP, mm_info.nrow, mm_info.col) );
+    setAttrib(VECTOR_ELT(ret_data, S_AUX_MM), R_DimNamesSymbol, mk_rownames(mm_info_rownames, MM_INFO_RN));
+    memcpy( INTEGER(VECTOR_ELT(ret_data, S_AUX_MM)), mm_info.data, sizeof(int) * mm_info.nrow * mm_info.col );
+  }    
   free(seq_buffer);
   free(aux_str.s);
   free(al_coord.data);
   free(query_info.data);
+  free(mm_info.data);
   cigar_string_free( &cigar );
   bam_destroy1(b);
   UNPROTECT(2);
   return(ret_data);
 }
+
+// Initially just return the basic information; that is no genotype data;
+// I haven't yet quite worked out how the genotype data is encoded as it
+// is not super clear from the data.. 
+SEXP bcf_read_n(SEXP bcf_ptr_r, SEXP n_r, SEXP fmt_tags_r){
+  struct bcf_ptrs *bcf = extract_bcf_ptr(bcf_ptr_r);
+  if(!bcf || !bcf->vcf)
+    error("External poiner or vcf/bcf file is NULL");
+  if(TYPEOF(n_r) != INTSXP || length(n_r) != 1)
+    error("n_r should be an integer vector of length 1");
+  if(TYPEOF(fmt_tags_r) != STRSXP)
+    error("fmt_tags_r should be a character vector");
+  // bcf1_t, we have the following fields fields
+  // pos, rlen:   64 bit signed integers (hts_pos_t, used to be 32 bits)
+  // rid:         32 bit signed integer (int32_t)
+  // qual:        float (32 bits)
+  // n_info, n_allele:  unsigned 32 bit integers (but using 16 bits, so effectively shorts)
+  //                    note that these use bitfields (which means that I don't think I can take
+  //                    the address of them to store as a single integer.
+  // n_fmt, n_sample:   unsigned 32 bit integers using 8 and 24 bits respectively.
+  // kstring_t shared, indiv: Presumably a string holding the data;
+  // use ks_c_str( kstring_t *s ) to make a null terminated const char
+  //
+  // the individual data is meant to be unpacked using bcf_unpack which will put it into a bcf_dec_t structure.
+  // the chrom field is a signed 32 bit integer (int32_t)
+  //
+  // To specify a data structure for a set of FORMAT and INFO fields:
+  // I need to have a mapping from [tag] -> [ret_data index].
+  // This can be done via an intermediate array that has m values defaulting to -1
+  // tag_index
+  // tag_index[ tag_id ] -> ret_data index
+  // the tag_id can be obtained using: bcf_hdr_id2int()
+  // then the size of the tag_index is the maximum value of the tags requested.
+  // But it may be simpler if I first define the formats for each tag, then
+  // use, bcf_get_fmt_id (and bcf_get_info_id) for each record.
+  // Work out the dimensions and types of sample specific data we will return:
+  int *tag_ids = malloc(sizeof(int) * length(fmt_tags_r));
+  int *tag_offsets = malloc(sizeof(int) * length(fmt_tags_r)); // return to indicate which tags identified
+  int tag_n = 0;
+  Rprintf("length of fmt_tags_r is %d\n", length(fmt_tags_r));
+  for(int i=0; i < length(fmt_tags_r); ++i){
+    int id = bcf_hdr_id2int(bcf->header, BCF_DT_ID, CHAR(STRING_ELT(fmt_tags_r, i)));
+    if(id >= 0){
+      tag_ids[tag_n] = id;
+      tag_offsets[tag_n] = i;
+      ++tag_n;
+      Rprintf("%s: %ld\t%ld\t%d\t%d\t%d\n",
+	      CHAR(STRING_ELT(fmt_tags_r, i)),
+	      bcf_hdr_id2length( bcf->header, BCF_HL_FMT, id),
+	      bcf_hdr_id2number( bcf->header, BCF_HL_FMT, id),
+	      bcf_hdr_id2type( bcf->header, BCF_HL_FMT, id),
+	      bcf_hdr_id2coltype( bcf->header, BCF_HL_FMT, id),
+	      bcf_hdr_idinfo_exists( bcf->header, BCF_HL_FMT, id));
+    }
+  }
+
+  // This would be better to define as a macro or const somewhere else.
+  const char *const_field_names[12] = {"n", "rid", "rlen", "pos", "qual",
+				       "n_info", "n_allele", "n_fmt", "n_sample",
+				       "id", "als", "allleles"};
+  int fields_n = 12 + tag_n;
+  const char **field_names = malloc(sizeof(char*) * fields_n);
+  for(int i=0; i < 12; ++i)
+    field_names[i] = const_field_names[i];
+  for(int i=0; i < tag_n; ++i)
+    field_names[i + 12] = CHAR(STRING_ELT(fmt_tags_r, tag_offsets[i]));
+
+  for(int i=0; i < 12 + tag_n; ++i){
+    Rprintf("  %d : %s", i, field_names[i]);
+  }
+  Rprintf("\n");
+  SEXP ret_data_names = PROTECT( mk_strsxp( field_names, fields_n));
+					  
+  /* SEXP ret_data_names = PROTECT( mk_strsxp( (const char*[]){"rid", "rlen", "pos", "qual", */
+  /* 							      "n_info", "n_allele", "n_fmt", "n_sample", */
+  /* 							      "shared", "indiv", "id", "als", "allleles", "n"}, 14)); */
+  
+  SEXP ret_data = PROTECT( allocVector(VECSXP, length(ret_data_names)) );
+  setAttrib( ret_data, R_NamesSymbol, ret_data_names );
+  // The first element is a count of the number of elements actually read.
+  SET_VECTOR_ELT(ret_data, 0, allocVector(INTSXP, 1));
+  int *count = INTEGER(VECTOR_ELT(ret_data, 0));
+  *count = 0;
+  int n=asInteger(n_r);
+  if(n <= 0)
+    error("you must request at least one entry");
+  // allocate memory for the return data structure. Do this in a loop;
+  const unsigned int BCF_ret_types[11] =
+    {INTSXP, REALSXP, REALSXP, REALSXP, INTSXP, INTSXP, INTSXP, INTSXP,
+     STRSXP, STRSXP, STRSXP};
+  for(int i=0; i < 11; ++i)
+    SET_VECTOR_ELT(ret_data, i+1, allocVector( BCF_ret_types[i], n ));
+  
+  bcf1_t *b = bcf_init();
+  int which = BCF_UN_ALL; // unpack all information in order to work out how to use it.
+  size_t buf_size = 256;
+  char *ch_buf = malloc(sizeof(char) * buf_size);
+  while((*count) < n && bcf_read(bcf->vcf, bcf->header, b) == 0){
+    // unpack; this should fill the d (bcf_dec_t) data element
+    bcf_unpack(b, which);
+    // b->d has the following elements:
+    // int m_fmt, m_info, m_id, m_als, m_allele, m_flt; ## these represent sizes of something
+    // int n_flt; ## number of fields
+    // int *flt; // FILTER keys in the dictionary ?
+    // char *id, *als; // id and ref+alt block (0\separated). May be able to treat like const char
+    // char **allele;  // allele[0] is the REF? Not sure how this should be treated.
+    // bcf_info_t *info;
+    // bcf_fmt_t *fmt;  // FORMAT and individual sample
+    // and some more things. The actual allele information is probably in the fmt field.
+    // extract some suitable information..
+    INTEGER(VECTOR_ELT(ret_data, 1))[*count] = b->rid;
+    REAL(VECTOR_ELT(ret_data, 2))[*count] = (double)b->rlen;
+    REAL(VECTOR_ELT(ret_data, 3))[*count] = (double)b->pos;
+    REAL(VECTOR_ELT(ret_data, 4))[*count] = (double)b->qual;
+    INTEGER(VECTOR_ELT(ret_data, 5))[*count] = (int)b->n_info;
+    INTEGER(VECTOR_ELT(ret_data, 6))[*count] = (int)b->n_allele;
+    INTEGER(VECTOR_ELT(ret_data, 7))[*count] = (int)b->n_fmt;
+    INTEGER(VECTOR_ELT(ret_data, 8))[*count] = (int)b->n_sample;
+    SET_STRING_ELT(VECTOR_ELT(ret_data, 9), *count, mkChar(b->d.id));
+    SET_STRING_ELT(VECTOR_ELT(ret_data, 10), *count, mkChar(b->d.als));
+    // set only the reference allele to start with. Just in order to test how to deal with the
+    // data
+    size_t buf_offset = 0;
+    // the following code combines a set of 0 terminated chars. There should be a function
+    // for this; either in this code or in string.h or something.
+    for(int i=0; i < b->n_allele; ++ i){
+      int len = strlen( b->d.allele[i] );
+      if( 1 + buf_offset + len > buf_size ){
+	buf_size = 2 * (1 + buf_offset + len);
+	ch_buf = realloc(ch_buf, sizeof(char) * buf_size );
+	// in theory, ch_buf could be 0 at this point, if it is, we should crash shortly.
+      }
+      memcpy( ch_buf + buf_offset, b->d.allele[i], len );
+      ch_buf[ buf_offset + len ] = ',';
+      buf_offset += (len + 1);
+    }
+    ch_buf[ buf_offset - 1] = 0; 
+    SET_STRING_ELT(VECTOR_ELT(ret_data, 11), *count, mkChar(ch_buf));
+    //    SET_STRING_ELT(VECTOR_ELT(ret_data, 12), *count, mkChar(b->d.allele[0]));
+    //// TEMPORARY BLOCK FOR TESTING //////
+    const char *fm_id[3] = {"GT", "GQ", "AD"};
+    for(int i=0; i < 3; ++i){
+      bcf_fmt_t *fmt = bcf_get_fmt( bcf->header, b, fm_id[i] );
+      if(fmt != 0){
+	Rprintf("%s : %d  %d %d\n", fm_id[i], fmt->n, fmt->size, fmt->type );
+      }else{
+	Rprintf("%s : no entry found \n", fm_id[i]);
+      }
+    }
+    for(int i=0; i < tag_n; ++i){
+      Rprintf("%s : \n", CHAR(STRING_ELT(fmt_tags_r, tag_offsets[i])));
+      // the call to bcf_get_format_values crashes here. Maybe we should just get the data directly using the fmt information.
+      //      int nn = bcf_get_format_values( bcf->header, b, CHAR(STRING_ELT(fmt_tags_r, tag_offsets[i])), (void*)dst, &ndst, BCF_HT_INT);
+      bcf_fmt_t *fmt = bcf_get_fmt_id(b, tag_ids[i]);
+      // we have fmt.n, fmt.size, fmt.type; n is the number of values per sample. size the number of bytes per sample and type the data type.
+      Rprintf("%d  %d  %d  %d  %d\n", fmt->id, fmt->n, fmt->size, fmt->type, fmt->p_len);
+      int ns = fmt->p_len / fmt->size;
+      // OK; this is a major pain. But it does work... 
+      for(int j=0; j < ns && j < 5; ++j){
+	for(int k=0; k < fmt->n; ++k){
+	  int off = j * fmt->size + k * (fmt->size / fmt->n);
+	  Rprintf("%d %d %d:  ", j, k, off);
+	  switch(fmt->type){
+	  case BCF_BT_INT8:
+	    Rprintf(" %d ", (int)*(fmt->p + off));
+	    break;
+	  case BCF_BT_INT16:
+	    Rprintf(" %d ", (int)*((short*)fmt->p + off));
+	    break;
+	  case BCF_BT_INT32:
+	    Rprintf(" %d ", *((int*)fmt->p + off));
+	    break;
+	  case BCF_BT_FLOAT:
+	    Rprintf(" %f ", *((float*)fmt->p + off));
+	    break;
+	  default:
+	    Rprintf("don't know how to do that\n");
+	  }
+	  Rprintf("\n");
+	}
+      }
+    }
+    
+    ////////////////////////////////////////////
+    //    Rprintf("%d\t%d\n", b->n_fmt, b->d.m_fmt);
+    // d.m_fmt seems to be the maximum number of fmts;
+    // m is the size, n is the number.. we should be using n everywhere we have it.. 
+    /* for(int i=0; i < b->n_fmt; ++i) */
+    /*   Rprintf("\t%d: %s", b->d.fmt[i].id, bcf->header->id[BCF_DT_ID][ b->d.fmt[i].id ].key); */
+    /* Rprintf("\n"); */
+    ++(*count);
+  }
+  free(ch_buf);
+  free(tag_ids);
+  free(tag_offsets);
+  free(field_names);
+  bcf_destroy1(b);
+  UNPROTECT(2);
+  return(ret_data);
+}
+
 // what to return depends on the bitwise ret_flag_r
 // 01:   return individual bit counts (vector of size 12)
 // 10:   return a vector of all 4096 different flag values
@@ -1164,6 +1708,8 @@ static const R_CallMethodDef callMethods[] = {
   {"nuc_table", (DL_FUNC)&nuc_table, 0},
   {"bam_flag", (DL_FUNC)&bam_flag, 1},
   {"extract_aux_tags", (DL_FUNC)&extract_aux_tags, 3},
+  {"load_bcf", (DL_FUNC)&load_bcf, 2},
+  {"bcf_read_n", (DL_FUNC)&bcf_read_n, 3},
   {NULL, NULL, 0}
 };
 

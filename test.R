@@ -11,7 +11,6 @@ read.fasta <- function(fn){
     names(seq) <- sub("^>([^ ]+).+", "\\1", lines[id.i])
     seq
 }
-
 ref.seq <- read.fasta("KI270733.fasta")
 
 bam.f <- "test_srt.bam"
@@ -171,3 +170,141 @@ tmp.dx <- lapply(1:5, function(x){
 
 tmp1 <- sam.read.n(bam, 100)
 tmp2 <- sam.read.n(bam, 100)
+
+
+#### test bcf reading:
+source('read_bam.R')
+bcf <- load.bcf("Astac_LS420026.bcf", "Astac_LS420026.bcf.csi")
+tmp <- bcf.read.n(bcf, 10, c("GT", "AD", "DP", "GQ"))
+
+
+## test of MM aux parsing;
+source('read_bam.R')
+bam <- load.bam("rDNA_r5_sub.bam")
+rflag <- 0x1 + 0x2 + 0x4 + 0x8 + 0x10 + 0x20 + 0x200 + 0x800 + 0x1000 + 0x4000
+##rflag <-  bitwShiftL( 1, 15 ) - 1
+tmp.1 <- sam.read.n(bam, 1000, ret=rflag, resize=TRUE, transpose=TRUE)
+
+ref.fa <- readLines("contig_236.fa")
+ref.fa <- paste(ref.fa[-1], collapse="")
+
+p <- tmp.1$mm[,'r.pos']
+p <- p[ p > 0 ]
+## unfortunately, this does not give me what I want...
+sort( table(substring( ref.fa, p, p+1)) )
+##   AT     TA     TT     GT     TC     AA     CT     AC     GA     GC     TG 
+##  120    120    145    152    184    417    442    448    543    566    690 
+##   AG     CC     GG     CA     CG 
+## 1671   1722   4156   7128 155826 
+
+ref.dn <- substring( ref.fa, p, p+1)
+sum(ref.dn == "CG") / length(ref.dn) ## [1] 0.8938565
+## wrong sequence in about 11% of the cases. I will need to do some form of
+## debugging to work out what is going on. Thankfully the first and third are wrong
+## in this case, suggesting that it should be possible to debug..
+## Looking at the first one that is wrong, it seems that this may be related
+## to a combination of mapping difficulty and sequencing errors. That example
+## seems to be found in the telomeric region and the aligned parts do not seem
+## to align very well.
+## We can check this by considering the positions where the mapping seems wrong.
+
+## It doesn't look like there is a very strong pattern from below.
+## However what I did note is that that for the first wrong reference position
+## the query position coincided exactly with a deletion even (D). That is that
+## the beginning of the query was the same as the query looked for.
+## I will need to do some serious tracing of the data to work out what the problem is.
+
+
+cg.b <- substring( ref.fa, p, p + 1 ) == "CG"
+plot( p, col=1 + cg.b )
+## looks like there are rather specific positions where we have problems:
+
+plot( density( p[!cg.b] ) )## not much of a pattern
+plot(density(p[cg.b])) ## max 187
+
+## lets have quick look:
+p <- tmp.1$mm[,'r.pos']
+b1 <- (p > 0)
+b2 <- substring(ref.fa, p, p+1) == "CG"
+sum(b1 & b2) / sum(b1) ## 0.8938565
+
+with(tmp.1, plot(mm[b1 & b2, 'r.pos'], mm[b1 & b2, 'mod.l'] ))
+
+i <- which( b1 & b2 )
+mean.by.pos <- with(tmp.1, tapply( i, mm[i,'r.pos'], function(j){ mean( mm[j,'mod.l'] ) }))
+plot(as.numeric(names(mean.by.pos)), mean.by.pos, type='l')
+
+tmp.t <- table(p[cg.b])
+tmp.f <- table(p[!cg.b])
+
+par(mfrow=c(2,1))
+plot( as.numeric(names(tmp.t)), tmp.t)
+axis(2)
+plot( as.numeric(names(tmp.f)), tmp.f)
+axis(2)
+
+## check the positions
+mm.seq <- with(tmp.1, tapply(1:nrow(mm), mm[,'al.i'], function(i){ substring( seq[ mm[i,'al.i'] ], mm[i,'q.pos'], mm[i,'q.pos'] + 1 ) }))
+table( unlist(mm.seq) )
+##     CG 
+## 426010 
+
+## and 
+range(tmp.1$mm[,'mod.l'])
+## 0 255 
+hist(tmp.1$mm[,'mod.l'])
+## the vast majority of CpGs look unmethylated. 
+
+mm.qnt <- do.call(rbind,
+                  with(tmp.1, tapply(mm[,'mod.l'], mm[,'al.i'], quantile, prob=seq(0, 1, 0.1))))
+
+par(mfrow=c(3,4))
+for(q in colnames(mm.qnt))
+    hist(mm.qnt[,q], main=q)
+## nothing that interesting, except that the 90th percentile is still mostly below
+## 128 (i.e. unlikely to be methylated).
+
+par(mfrow=c(1,1))
+
+m.lp <- unlist(with(tmp.1,
+                 tapply(mm[,'mod.l'], mm[,'al.i'], function(x){ sum(x > 128) / length(x) })))
+
+hist(m.lp)
+which(m.lp > 0.25) ##
+## 317 355 469 560 
+## 317 355 469 560 
+
+tmp.1$q.inf[m.lp > 0.25,]
+##       qlen q.cigl q.beg q.end
+## [1,]  4461   4461     1  4406
+## [2,] 11438  11438     1  1694
+## [3,] 11438  11438     1  5853
+## [4,]  4321   4321     1  1780
+
+tmp.1$pos[m.lp > 0.25]
+## [1] 16824 17560 21768 25066
+
+hist(tmp.1$pos)
+abline(v=tmp.1$pos[m.lp > 0.25], col='red')
+
+plot.met <- function(i){
+    cols <- 1:length(i)
+    names(cols) <- as.character(i)
+    ops <- as.data.frame(with(tmp.1, ops[ ops[,'al.i'] %in% i, ]))
+    mm <-  as.data.frame(with(tmp.1, mm[ mm[,'al.i'] %in% i, ]))
+    par(mfrow=c(1,1))
+    plot.new()
+    plot.window(xlim=c(0,255), ylim=range(ops[,c('q0', 'q1')]))
+    axis(3)
+##
+##    with(mm, segments(0, q.pos, mod.l, q.pos, col=cols[as.character(al.i)]))
+    with(mm, segments(0, q.pos, mod.l, q.pos, col=rgb(0,0,0,0.1)))
+    plot.window(xlim=range(ops[,c('r0', 'r1')]), ylim=range(ops[,c('q0', 'q1')]))
+    with(ops, segments(r0, q0, r1, q1, col=cols[as.character(al.i)], lwd=0.5))
+    axis(1)
+    axis(2)
+}
+## but really necessary to translate the coordinates.. This is too tricky otherwise.
+plot.met( which(m.lp > 0.25) )
+
+plot.met( 400:600 )

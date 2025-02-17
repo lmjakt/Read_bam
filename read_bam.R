@@ -2,10 +2,13 @@
 ## as a package
 dyn.load( paste(dirname(sys.frame(1)$ofile), "read_bam.so", sep="/") )
 
-load.bam <- function(bam, bam.index){
+load.bam <- function(bam, bam.index=""){
     .Call("load_bam", bam, bam.index);
 }
 
+load.bcf <- function(bcf, bcf.index=""){
+    .Call("load_bcf", bcf, bcf.index)
+}
 
 set.bam.iterator <- function(bam.ptr, region, range=NULL){
     if(is.null(range)){
@@ -66,6 +69,7 @@ aligned.region <- function(region, range, bam.ptr, transpose=FALSE, merge=FALSE,
 ## 12  800     2048      aux
 ## the default flag is: id, seq, qual, aux
 ## 13 1000     4096      cigar_operations
+## 15 4000     16384     parse MM aux data. 
 ## if the 13th bit is set, then the cigar string will be parsed and
 ## a table containing the operations, and a table containing 
 ## additional query information will be returned (ops and q.inf)
@@ -91,6 +95,18 @@ sam.read.n <- function(bam.ptr, n, ret.f=( 0x1 + 0x200 + 0x400 + 0x800),
         }
     }
     tmp
+}
+
+bcf.read.n <- function(bcf.ptr, n, fmt.tags=character(), resize=FALSE){
+    bcf <- .Call("bcf_read_n", bcf.ptr, as.integer(n), fmt.tags)
+    n <- bcf[[ 1 ]]
+    i <- which(!names(bcf) %in% fmt.tags)
+    j <- which(names(bcf) %in% fmt.tags)
+    smp <- bcf[j];
+    bcf <- data.frame(bcf[2:max(i)])
+    if(resize)
+        bcf <- bcf[1:n,]
+    list(bcf=bcf, smp=smp, n=n)
 }
 
 ## ret flag is a bitwise flag that determines whether
@@ -178,9 +194,4 @@ extract.aux <- function(aux, tags, types){
 }
 
 
-## Note this has not yet been implemented.
 
-## R function to parse the MM and ML
-## parse.MM <- function(MM, ML){
-##     if(grepl(M
-## }

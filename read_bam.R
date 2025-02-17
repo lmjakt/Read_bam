@@ -178,7 +178,9 @@ extract.aux <- function(aux, tags, types){
 }
 
 
+## Note this has not yet been implemented.
+
 ## R function to parse the MM and ML
-parse.MM <- function(MM, ML){
-    if(grepl(M
-}
+## parse.MM <- function(MM, ML){
+##     if(grepl(M
+## }

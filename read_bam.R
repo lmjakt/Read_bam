@@ -69,6 +69,7 @@ aligned.region <- function(region, range, bam.ptr, transpose=FALSE, merge=FALSE,
 ## 12  800     2048      aux
 ## the default flag is: id, seq, qual, aux
 ## 13 1000     4096      cigar_operations
+## 15 4000     16384     parse MM aux data. 
 ## if the 13th bit is set, then the cigar string will be parsed and
 ## a table containing the operations, and a table containing 
 ## additional query information will be returned (ops and q.inf)

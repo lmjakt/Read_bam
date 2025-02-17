@@ -31,6 +31,9 @@
 // a global variable; I feel dirty;
 const char* cig_ops_rownames[CIG_OPS_RN] = {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
 
+#define Q_INFO_RN 6
+const char* q_info_rownames[Q_INFO_RN] = {"qlen", "q.cigl", "q.beg", "q.end", "ops.beg", "ops.end"};
+
 #define MM_INFO_RN 6
 const char* mm_info_rownames[MM_INFO_RN] = {"al.i", "q.pos", "mod", "mod.n", "mod.l", "r.pos"};
 
@@ -368,9 +371,9 @@ uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_i
     return(0);
   }
   *skip_info = data[i];
-  if(data[0] >= '0' & data[0] <= '9'){
+  if(data[0] >= '0' && data[0] <= '9'){
     *mod_n = 1;
-    *mod_code = atoi( data );
+    *mod_code = atoi( (const char*)data );
   }else{
     *mod_n = i;
     for(size_t j=0; j < i; ++j)
@@ -381,36 +384,98 @@ uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_i
   return( data + i + 2 );
 }
 
+// translate query to reference positions. Requires an i_matrix of
+// query operations; 
+// Returns 1 on alignment, 0 on no alignment
+// to the one used that contains the query position.
+// q_pos: the query position. This is assumed to be 1-based because of
+//        the behaviour of parse_MM_string
+// r_pos: A pointer whose value should be set to the reference position
+// ops:   A pointer to an i_matrix table containing cigar positions
+// beg:   The first column of the current alignment in the ops table
+// end:   The index of the last column of the current alignment + 1
+// col_i: The current column being parsed. This should be incremented
+//        or decremented depending on the circumstance.
+int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
+		 size_t beg, size_t end, size_t *col_i){
+  // currently the positions from parse_MM_string are 1 based due
+  // to how they are found;
+  // however, the positions in the ops table are 0 based.
+  // The ops table (since it will be exported to R) should be changed
+  // to 1 - based counting at some point in the future. But for now
+  // changing all of those is a bit much. Instead here we change
+  // the q_pos to a 0 based system.
+  // REMOVE THIS LINE IF ops table changes to a 0 based system.
+  // regression possibility!!
+  // default mapping:
+  *r_pos = -1;
+  q_pos--;
+  if(beg == end || *col_i == end || *col_i < beg)
+    return(0);
+  // the row offsets of the ops table; We might want to check
+  // the structure, but this should be considered a priviledged
+  // call.
+  int op = 1;
+  int r0 = 3; 
+  int q0 = 4;
+  //  int r1 = 5;
+  int q1 = 6;
+  // for forward read; this is the only thing that is supported.
+  while( *col_i < end ){
+    int *coords = ops->data + (*col_i) * ops->nrow;
+    if( coords[q0] <= q_pos && coords[q1] >= q_pos ){
+      // if the op type is M, (i.e. 0) we have a match.
+      // otherwise we don't have a match.
+      if( coords[op] == 0 ){
+	*r_pos = 1 + coords[r0] + (q_pos - coords[q0]);
+	return(1);
+      }
+      return(0);
+    }
+    (*col_i)++;
+  }
+  return(0);
+}
+
 // parse MM AND ML strings; fill a  matrix with values;
-// Unfortunately we have to parse the complete auxiliary information as the
-// information can be interleaved or in serial. If interleaved need to know
-// a multiplier; if in serial then the mapping to the qualities is straightforward
-// but we then need to calculate the query position repeatedly.
 // 
-// s is 0 or a position in the bam_aux_string (ideally where ML starts)
-// if 0, it will be set to the beginning of the AU data;
-// This function only supports the identification of a single merged string that
-// can be used for several modifications.
+// This function assumes that all information will be contained within a single
+// MM and a single ML AUX field. I do not know if this is what the standard
+// specifies. This should be checked.
 //
 // INITIAL LIMITATION: to simplify initial implementation, this will only take
 // forward reads to start with. Reverse complemented ones have to be read backwards.
 //
-// Ideally this function would also parse the cigar string in order to directly
-// give the reference position. This is not super easy to do elegantly;
-// Having a helper function that does something like:
+// s is 0 or a position in the bam_aux_string (ideally where MM starts)
+// if 0, it will be set to the beginning of the AU data;
+// I should probably remove this argument as it is possible for ML precede MM
+// in which case specifying s is problematic.
+//
+// To define positions in the reference we need to parse the cigar; we could do that
+// directly here, but the complete cigar needs to be parsed first for reverse sequences
+// That means that we might as well use the existing code that does this, and take
+// a table of cigar operations with query and reference positions already defined.
+// cig_ops:   a pointer to an i_matrix table filled by cigar_to_table()
+// ops_beg and ops_end: the range of rows giving the cigar operations
+// for the alignment specified by b. Note that ops_end is the index of
+// the first operation for the next query; hence ops_end - ops_beg gives
+// the numer of operations; note that this can be 0. This can happen for unaligned
+// query sequences and must be checked.
 // query_to_ref(cigar, cigar_pos)
 // that moves to the next cigar position when needed to might make the most sense
-void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i){
+void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
+		     struct i_matrix *cig_ops, size_t ops_beg, size_t ops_end){
   // mod_data should have 6 rows; these are
   // al_i, query_pos, mod_code, mod_n, mod_likelihood, ref_pos
   // This is very wasteful; we could get rid of al_i and return as elements of a list instead
   // but that would just move the problem downstream.
   //
-  if(mod_data->nrow != 6){
+  if(mod_data->nrow != MM_INFO_RN){
     warning("parse_MM_string: mod_data should have 6 rows");
     return;
   }
   int mod_data_begin = mod_data->col; // in order to check that the qualities correspond as they should.
+  size_t current_op = ops_beg;
   // return if reverse complemented or if hard clipped. With hard clipping we have
   // no means of identifying the locations in the sequence.
   uint32_t *cigar = bam_get_cigar(b);
@@ -425,21 +490,20 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i)
   // The key, type and tag can be obtained from: s - 2, *s and s+1
   // that is to say, that the complete field starts at s -2
   // since we need the key and type we simply subtract 2 from s.
+  // but we cannot subtract before checking for null
   if(s == 0)
-    s = bam_aux_first(b) - 2 ;
+    s = bam_aux_first(b);
   uint8_t *end = b->data + b->l_data;
   short MM = *((short*)"MM");
   short ML = *((short*)"ML");
   uint8_t *mm = 0;
   uint8_t *ml = 0;
-  // I've not found the documentation for 0xfffffffffffffffe,
-  // but this appears to be some form of special meaning.
-  while(s && s != (uint8_t*)0xfffffffffffffffe){
-    if(*(short*)s == MM)
-      mm = s;
-    if(*(short*)s == ML)
-      ml = s;
-    s = bam_aux_next(b, s+2) - 2;
+  while(s){ 
+    if(*(short*)(s-2) == MM)
+      mm = s-2;
+    if(*(short*)(s-2) == ML)
+      ml = s-2;
+    s = bam_aux_next(b, s);
   }
   if(mm == 0){
     // either some error, or no data; note that ml, is optional.
@@ -462,17 +526,17 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i)
   char skip_info;
   int mod_n;
   uint8_t *data = get_ml_code(mm + 5, &mod_code, &mod_n, &skip_info);
-  // then parse the positions of the code.
-  // Until
-  //     *data == 0       or
-  //     *data == ';'
   uint8_t *seq_data = bam_get_seq(b);
-  size_t seq_i = 0;
-  size_t seql = b->core.l_qseq;
-  while(data && *data){
-    int nb = atoi(data);
+  int32_t seq_i = 0;
+  int32_t seql = b->core.l_qseq;
+  // in theory it's possible for the pointer to become NULL, but
+  // that would have to be after exceeding 2^64 - 1. Which would
+  // mean that it's invalid anyway as we won't have that much memory.
+  while(data && *data && data < end){ 
+    int nb = atoi((const char*)data);
     // then process the query sequence to find the query position
     int base_count = 0;
+    int r_pos = -1;
     if(nuc == 'N'){
       seq_i = seq_i + nb;
     }else{
@@ -483,7 +547,7 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i)
       }
     }
     if(seq_i >= seql){
-      warning("position exceeded sequence in %s %d --> %ld >= %ld", bam_get_qname(b), nb, seq_i, seql);
+      warning("position exceeded sequence in %s %d --> %d >= %d", bam_get_qname(b), nb, seq_i, seql);
       break;
     }
     // At this point the base at seq_i should be nuc; and should
@@ -491,7 +555,9 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i)
     // add a column to a table with the following rows:
     // alignment row, mod_code, skip_info, nskip
     // the nskip is then changed to the likelihood value from the ML table
-    push_column( mod_data, (int[]){al_i, (int)seq_i, (int)mod_code, mod_n, 0, 0 } );
+    // obtain the refeference position.
+    query_to_ref( seq_i, &r_pos, cig_ops, ops_beg, ops_end, &current_op);
+    push_column( mod_data, (int[]){al_i, (int)seq_i, (int)mod_code, mod_n, 0, r_pos} );
     // find the comma or the semicolon
     while(*data && *data >= '0' && *data <= '9' )
       ++data;
@@ -552,16 +618,24 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i)
 //     Similarly, the beginning and end positions of the original query can differ
 //     So the function also sets q_beg and q_end. These refer to the query
 //     prior to any hard clipping.
+//
+// Set the value of ops_beg, and ops_end giving the first and end columns of
+// al_coord for the given alignment. These can then be used when parsing
+// MM and ML tags in order to get reference positions.
 // 
-// In the future I might add functionality that also identifies sequence
-// differences and parses MM and ML data; however, it is difficult to do this
-// without making spaghetti code;
+// ops_end is defined as 1 + the last index; this is so that ops_beg == ops_end when
+// no operations were parsed. This can happen for unaligned reads.
+// 
+// Note that this implies that parsing MM / ML requires that the cigar is
+// parsed.
 //
 // WARNING: this function counts from 0, not 1; this is different from
 //          what I did in aligned_region.
 // It is to make it easier to reuse the data within this data.
 // Using this, I should be able to subset sequences 
-void cigar_to_table(bam1_t *al, int al_i, struct i_matrix *al_coord, int *qcig_length, int *q_beg, int *q_end){
+void cigar_to_table(bam1_t *al, int al_i, struct i_matrix *al_coord,
+		    int *qcig_length, int *q_beg, int *q_end,
+		    size_t *ops_beg, size_t *ops_end){
   // rows are: {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
   int column[CIG_OPS_RN] = {0, 0, 0, 0, 0, 0, 0, 0};
   column[0] = al_i;
@@ -573,9 +647,11 @@ void cigar_to_table(bam1_t *al, int al_i, struct i_matrix *al_coord, int *qcig_l
   *q_beg = 1;
   *q_end = 0;
   // if we have hard clipping set q_beg appropriately:
+  // we should define MACROs to replace the numbers here.
   if(cigar_l && bam_cigar_op(cigar[0]) == 5)
     *q_beg = bam_cigar_oplen(cigar[0]);
-  
+
+  *ops_beg = al_coord->col;
   for(int i=0; i < cigar_l; ++i){
     // if operation is H also increment the qcig_length
     int type = bam_cigar_type(cigar[i]);
@@ -596,6 +672,7 @@ void cigar_to_table(bam1_t *al, int al_i, struct i_matrix *al_coord, int *qcig_l
     column[7] = op_length;
     push_column( al_coord, column );
   }
+  *ops_end = al_coord->col;
 }
 
 // A convenience function; creates a VECSXP containing a STRSXP in the first
@@ -1146,38 +1223,42 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
   }
   int *count = INTEGER(VECTOR_ELT(ret_data, length(ret_data_names)-1));
   *count = 0;
-  // The last element may be a matrix, if specified. Otherwise left as NULL.
-  // But we have to copy the matrix as it contains all the cigar operations
-  // and these are of unknown length;
-  // see top of the file for what these are.. 
-  // The following four of these are character vectors: id, seq, qual, aux
-  /* for(int i=1; i < length(ret_data); ++i) */
-  /*   SET_VECTOR_ELT(ret_data, i, allocVector(STRSXP, n)); */
-  //  int r;  // the return value from sam_read1
+  // Elements after S_AUX, may take other forms; in general they will be
+  // matrices.
+  // The last element itself is just a single integer giving the number of
+  // alignments parsed.
+  // These additional matrices have unknown sizes and hence have to be copied
+  // into the appropriate R data structures. This is to avoid using the R SEXP
+  // resize function (I forget the name here). That anyway doesn't do anything clever
+  // to avoid unnecessary memory allocations.
   bam1_t *b = bam_init1();
   size_t seq_buffer_size = 500;
   char *seq_buffer = malloc(seq_buffer_size);
   kstring_t aux_str = KS_INITIALIZE;
+  // If S_AUX_MM is set then we need to parse the cigar table. We don't have to return
+  // it to the R session, but for now it is easier to simply force this behaviour.
+  // Alternatively, if the cigar is not parsed don't set reference positions.
+  // We can work out the best option later. But for now we will force the behaviour.
+  if( ret_flag & (1 << S_AUX_MM) )
+    ret_flag |= (1 << S_CIG_TABLE);
   // If S_CIG_TABLE is set, then initialise to i_matrix arrays;
   // one will hold q_info (the actual query lengths, beg and end positions before clipping)
   // and the other will hold the cigar operations in a table of unknown length;
   int ret_cig_ops = ret_flag & (1 << S_CIG_TABLE);
   struct i_matrix al_coord = init_i_matrix(CIG_OPS_RN, (ret_cig_ops ? OPS_INIT_SIZE : 0));
   // they query_info will hold the q_length, q_cig_length, q_beg, q_end. (possibly also
-  struct i_matrix query_info = init_i_matrix(4, (ret_cig_ops ? n : 0));
-  // We should then free the al_coord.data query_info.data after copying to an R data
+  struct i_matrix query_info = init_i_matrix(Q_INFO_RN, (ret_cig_ops ? n : 0));
+  // The al_coord.data and query_info.data should be freed after copying to an R SEXP
+
   // If S_AUX_MM specified, then parse MM information into an i_matrix that will need to be copied.
   // the 6 rows of the i_matrix are: al_i, query_pos, mod_code, mod_n, mod_likelihood, ref_pos
-
   struct i_matrix mm_info = init_i_matrix(MM_INFO_RN, (ret_flag & (1 << S_AUX_MM)) ? n : 0);
   // structure.
   // the initial size should probably be exposed to the user
   struct cigar_string cigar = cigar_string_init(256);
-  // size_t aux_str_size = 0;  return value not used.
-  //  for(int i=0; i < n && sam_read1(bam->sam, bam->header, b) >= 0; ++i){
   int qcig_length, q_beg, q_end;
+  size_t ops_begin, ops_end;
   while( (*count) < n && read_next_entry(bam, b) >= 0){
-    //  for(int i=0; i < n && read_next_entry(bam, b) >= 0; ++i){
     if( (f_flag & b->core.flag) != f_flag || (F_flag & b->core.flag) > 0 || b->core.qual < min_q )
       continue;
     if(ret_flag & (1 << S_QID))
@@ -1218,11 +1299,12 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
       aux_str.s[0] = 0;
     }
     if(ret_flag & (1 << S_CIG_TABLE)){
-      cigar_to_table(b, 1+(*count), &al_coord, &qcig_length, &q_beg, &q_end);
-      push_column(&query_info, (int[]){ b->core.l_qseq, qcig_length, q_beg, q_end });
+      cigar_to_table(b, 1+(*count), &al_coord, &qcig_length, &q_beg, &q_end, &ops_begin, &ops_end);
+      push_column(&query_info, (int[]){ b->core.l_qseq, qcig_length, q_beg, q_end,
+					ops_begin, ops_end });
     }
     if(ret_flag & (1 << S_AUX_MM)){
-      parse_MM_string(b, 0, &mm_info, 1+(*count));
+      parse_MM_string(b, 0, &mm_info, 1+(*count), &al_coord, ops_begin, ops_end);
     }
     (*count)++;
   }
@@ -1232,7 +1314,7 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
     setAttrib(VECTOR_ELT(ret_data, S_CIG_TABLE), R_DimNamesSymbol, mk_rownames(cig_ops_rownames, CIG_OPS_RN));
     SET_VECTOR_ELT( ret_data, S_CIG_TABLE+1, allocMatrix(INTSXP, query_info.nrow, query_info.col) );
     setAttrib(VECTOR_ELT(ret_data, S_CIG_TABLE+1), R_DimNamesSymbol,
-	      mk_rownames((const char*[]){"qlen", "q.cigl", "q.beg", "q.end"}, 4));
+	      mk_rownames(q_info_rownames, Q_INFO_RN));
     memcpy( INTEGER(VECTOR_ELT(ret_data, S_CIG_TABLE)), al_coord.data, sizeof(int) * al_coord.nrow * al_coord.col );
     memcpy( INTEGER(VECTOR_ELT(ret_data, S_CIG_TABLE+1)), query_info.data, sizeof(int) * query_info.nrow * query_info.col );
   }
@@ -1614,8 +1696,8 @@ SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
     aux_types[i] = CHAR(type_r)[0] & up_mask; // sets to upper as we don't distinguish
     // check if it is allowed;
     if( !(((1 << ((aux_types[i] & right_mask) - 1)) & type_check) && ((left_mask & aux_types[i]) == left_check) ) ){
-      free(aux_types);
       Rprintf("illegal aux_type: %c\n", aux_types[i]);
+      free(aux_types);
       error("Error illegal aux_type");
     }
   }

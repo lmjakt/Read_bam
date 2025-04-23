@@ -23,7 +23,7 @@
 #define S_QUAL 10  // 0x400
 #define S_AUX 11 // 0x800
 #define S_CIG_TABLE 12  // 0x1000
-#define S_AUX_MM 14  // 0x2000
+#define S_AUX_MM 14  // 0x4000
 
 // The number of rows in an cigar operations table
 #define CIG_OPS_RN 8
@@ -347,7 +347,7 @@ size_t bam_aux_string(bam1_t *b, kstring_t *str){
 // helper function for parse_MM_string
 // determines the modification code; sets the modification indicated
 // as an unsigned integer made by combining up to four modifications.
-// returns a pointer to where the data start. That is, after
+// returns a pointer to where the data starts. That is, after
 // the first comma. Also sets the char skip_info to "?" or "."
 // of ',' if not defined.
 //
@@ -363,11 +363,13 @@ uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_i
     ++i;
   }
   if(data[i] == 0 || i == 0){
-    warning("Found end of string in MM header");
+    // this will be true at the end of the MM entry as it should end with ;
+    // hence do not warn here:
+    // warning("Found end of string in MM header");
     return(0);
   }
   if(i > 4){
-    warning("No more than for modifications allowed");
+    warning("No more than four modifications allowed");
     return(0);
   }
   *skip_info = data[i];
@@ -396,8 +398,11 @@ uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_i
 // end:   The index of the last column of the current alignment + 1
 // col_i: The current column being parsed. This should be incremented
 //        or decremented depending on the circumstance.
+// is_fwd: 0 if the read has been reverse complemented. In that case
+//         we have to go backwards.
+// qlen:  The length of the query sequence. Needed for reverse mapping.
 int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
-		 size_t beg, size_t end, size_t *col_i){
+		 size_t beg, size_t end, size_t *col_i, int is_fwd, int32_t q_len){
   // currently the positions from parse_MM_string are 1 based due
   // to how they are found;
   // however, the positions in the ops table are 0 based.
@@ -405,11 +410,11 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   // to 1 - based counting at some point in the future. But for now
   // changing all of those is a bit much. Instead here we change
   // the q_pos to a 0 based system.
-  // REMOVE THIS LINE IF ops table changes to a 0 based system.
+  q_pos--;
+  // REMOVE THE ABOVE LINE IF ops table changes to a 1 based system.
   // regression possibility!!
   // default mapping:
   *r_pos = -1;
-  q_pos--;
   if(beg == end || *col_i == end || *col_i < beg)
     return(0);
   // the row offsets of the ops table; We might want to check
@@ -421,18 +426,43 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   //  int r1 = 5;
   int q1 = 6;
   // for forward read; this is the only thing that is supported.
-  while( *col_i < end ){
+  if(is_fwd){
+    while( *col_i < end ){
+      int *coords = ops->data + (*col_i) * ops->nrow;
+      if( coords[q0] <= q_pos && coords[q1] >= q_pos ){
+	// if the op type is M, (i.e. 0) we have a match.
+	// otherwise we don't have a match.
+	if( coords[op] == 0 ){
+	  *r_pos = 1 + coords[r0] + (q_pos - coords[q0]);
+	  return(1);
+	}
+	return(0);
+      }
+      (*col_i)++;
+    }
+    return(0); // no coordinate obtained.
+  }
+  // otherwise we are mapping in the reverse direction.
+  // We note that we might be able merge the two parts here, as the only difference is
+  // the loop condition and the direction of change. But lets try separately first.
+  q_pos = q_len - q_pos;
+  if(q_pos < 0){
+    warning("Obtained a negative query position: %d for q_len %d", q_pos, q_len);
+    return(0);
+  }
+  while( *col_i >= beg ){
     int *coords = ops->data + (*col_i) * ops->nrow;
     if( coords[q0] <= q_pos && coords[q1] >= q_pos ){
       // if the op type is M, (i.e. 0) we have a match.
       // otherwise we don't have a match.
       if( coords[op] == 0 ){
-	*r_pos = 1 + coords[r0] + (q_pos - coords[q0]);
+	// do not add 1 here !
+	*r_pos = coords[r0] + (q_pos - coords[q0]);
 	return(1);
       }
       return(0);
     }
-    (*col_i)++;
+    (*col_i)--;
   }
   return(0);
 }
@@ -471,22 +501,28 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   // but that would just move the problem downstream.
   //
   if(mod_data->nrow != MM_INFO_RN){
-    warning("parse_MM_string: mod_data should have 6 rows");
+    warning("parse_MM_string: mod_data should have %d rows", MM_INFO_RN);
+    return;
+  }
+  if(ops_beg >= ops_end || ops_end > cig_ops->col){
+    warning("cigar op rows out of range: %d -> %d but only %d columns of data", ops_beg, ops_end, cig_ops->col);
     return;
   }
   int mod_data_begin = mod_data->col; // in order to check that the qualities correspond as they should.
-  size_t current_op = ops_beg;
-  // return if reverse complemented or if hard clipped. With hard clipping we have
+  // return if hard clipped. With hard clipping we have
   // no means of identifying the locations in the sequence.
   uint32_t *cigar = bam_get_cigar(b);
-  if(bam_cigar_op(cigar[0]) == BAM_CHARD_CLIP){ // this is just an & BAM_CIGAR_MASK
+  // Remove any with hard clipping set.
+  if(bam_cigar_op(cigar[0]) == BAM_CHARD_CLIP || cig_ops->data[ (ops_end-1) * cig_ops->nrow + 1 ] == BAM_CHARD_CLIP){
     warning("MM parsing not possible for hard clipped sequences");
     return;
   }
-  if( b->core.flag & 16 ){
-    warning("MM parsing not implemented for reversed sequences");
-    return;
-  }
+  int is_fwd = (b->core.flag & 16) ? 0 : 1;
+  size_t current_op = is_fwd ? ops_beg : ops_end - 1;
+  /* if( b->core.flag & 16 ){ */
+  /*   warning("MM parsing not implemented for reversed sequences"); */
+  /*   return; */
+  /* } */
   // The key, type and tag can be obtained from: s - 2, *s and s+1
   // that is to say, that the complete field starts at s -2
   // since we need the key and type we simply subtract 2 from s.
@@ -526,13 +562,16 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   char skip_info;
   int mod_n;
   uint8_t *data = get_ml_code(mm + 5, &mod_code, &mod_n, &skip_info);
+  if(data == 0){
+    warning("No MM data obtained for query: %s", bam_get_qname(b));
+  }
   uint8_t *seq_data = bam_get_seq(b);
   int32_t seq_i = 0;
   int32_t seql = b->core.l_qseq;
   // in theory it's possible for the pointer to become NULL, but
   // that would have to be after exceeding 2^64 - 1. Which would
   // mean that it's invalid anyway as we won't have that much memory.
-  while(data && *data && data < end){ 
+  while(data && data < end && *data >= '0' && *data <= '9'){ 
     int nb = atoi((const char*)data);
     // then process the query sequence to find the query position
     int base_count = 0;
@@ -541,32 +580,36 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
       seq_i = seq_i + nb;
     }else{
       while(seq_i < seql && base_count <= nb){
-	if( nuc_encoding[ bam_seqi(seq_data, seq_i) ] == nuc )
+	char base = is_fwd ? nuc_encoding[ bam_seqi(seq_data, seq_i) ] : nuc_encoding_rc[ bam_seqi(seq_data, seql-(seq_i+1)) ];
+	if( base == nuc )
 	  ++base_count;
 	++seq_i;
       }
     }
-    if(seq_i >= seql){
+    // seq_i is one based; this means that it should be OK for it to be equal
+    // to seq_l
+    if(seq_i > seql){
       warning("position exceeded sequence in %s %d --> %d >= %d", bam_get_qname(b), nb, seq_i, seql);
       break;
     }
     // At this point the base at seq_i should be nuc; and should
     // be the one for which we have modification data. 
     // add a column to a table with the following rows:
-    // alignment row, mod_code, skip_info, nskip
-    // the nskip is then changed to the likelihood value from the ML table
+    // alignment index, query position (seq_i), modification code, mod_n (number of modifications, up to 4), mod_likelihood, ref_pos
     // obtain the refeference position.
-    query_to_ref( seq_i, &r_pos, cig_ops, ops_beg, ops_end, &current_op);
+    query_to_ref( seq_i, &r_pos, cig_ops, ops_beg, ops_end, &current_op, is_fwd, seql );
     push_column( mod_data, (int[]){al_i, (int)seq_i, (int)mod_code, mod_n, 0, r_pos} );
     // find the comma or the semicolon
     while(*data && *data >= '0' && *data <= '9' )
       ++data;
     if(*data == ';'){
         nuc = data[1];
-	strand = data[2];
-	data = get_ml_code(data+3, &mod_code, &mod_n, &skip_info);
-	seq_i = 0;
-	continue;
+    	strand = data[2];
+    	data = get_ml_code(data+3, &mod_code, &mod_n, &skip_info);
+    	current_op = is_fwd ? ops_beg : ops_end - 1;
+    	// here data can be 0 if the ';' indicates the end of the MM field.
+    	seq_i = 0;
+    	continue;
     }
     ++data;
   }
@@ -605,7 +648,7 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   // At this point we have certain expectations. For example
   // col should be equal to mod_data->col.
   if( col != mod_data->col ){
-    warning("col %d is not equal to mod_data->col %ld", col, mod_data->col);
+    warning("col %d is not equal to mod_data->col %ld for %s", col, mod_data->col, bam_get_qname(b));
   }
   return;
 }

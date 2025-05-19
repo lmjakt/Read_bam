@@ -505,7 +505,7 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
     return;
   }
   if(ops_beg >= ops_end || ops_end > cig_ops->col){
-    warning("cigar op rows out of range: %d -> %d but only %d columns of data", ops_beg, ops_end, cig_ops->col);
+    warning("cigar op rows out of range: %ld -> %ld but only %ld columns of data", ops_beg, ops_end, cig_ops->col);
     return;
   }
   int mod_data_begin = mod_data->col; // in order to check that the qualities correspond as they should.
@@ -1061,6 +1061,12 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   int av_column[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   SEXP al_var_dimnames = PROTECT( mk_rownames((const char*[]){"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen", "qclen"}, 8));
   char *qseq = 0; // use as a temporary variable to hold the address of the query sequence
+  // Like qseq, but for the quality values. These can be obtained using
+  // bam_get_qual() which returns a pointer to the qual data
+  //                of length bam->core.l_qseq
+  // Currently there is no option to return the quality scores; but I can add qualities
+  // at mismatched position without modifying any data structures. I
+  char *qqual=0; //
   while((r=sam_itr_next(bam->sam, b_itr, al)) >= 0){
     uint32_t flag = (uint32_t)al->core.flag;
     // any bits set in flag_filter[0] must also be set in flag
@@ -1081,6 +1087,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     }
     if(opt_flag & 3){
       qseq = bam_seq(al);
+      qqual = bam_get_qual(al);
       if(opt_flag & 1){
 	if(qseq)
 	  str_array_push(&query_seq, qseq);
@@ -1130,9 +1137,12 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 	  // Note that qseq may not be stored.
 	  if(qseq && (opt_flag & 2) && (j + r_pos) < ref_seq_l ){
 	    if(qseq[ q_pos + j - 1] != ref_seq[ r_pos + j -1 ]){
+	      int nuc_info = ((int)ref_seq[r_pos + j -1 ] << 8) | (int)qseq[q_pos+j -1];
+	      if(qqual)
+		nuc_info |= (qqual[q_pos+j-1] << 16);
 	      // This is a bit of a nameful, but see definition of data struct above
 	      push_column(&var_coord, (int[]){al_count, r_pos+j, q_pos+j,
-		    (((int)ref_seq[r_pos + j -1 ] << 8) | (int)qseq[q_pos+j -1])} );
+						nuc_info});
 	    }
 	  }
 	  if(opt_flag & 4){

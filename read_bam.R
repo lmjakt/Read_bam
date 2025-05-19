@@ -144,7 +144,7 @@ sam.flags <- function(flags=0xFFFF){
 
 ## convert an int to two nucs..
 alt.nuc <- function(alt){
-    r <- intToUtf8( bitwShiftR( alt, 8 ))
+    r <- intToUtf8( bitwAnd( bitwShiftR( alt, 8 ), 0x000000FF ) )
     q <- intToUtf8( bitwAnd( alt, 0x000000FF ) );
     matrix(sapply( strsplit(c(r, q), ""), eval), ncol=2)
 }

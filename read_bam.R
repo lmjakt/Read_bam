@@ -24,11 +24,12 @@ clear.bam.iterator <- function(bam.ptr){
     .Call("clear_iterator", bam.ptr)
 }
 
-## opt.flag is the bitwise OR of:
+## opt.flag is the bitwise OR of bits:
 ## 1 return seq_data as a character vector array
 ## 2 return positions that differ from reference; requires that ref.seq is specified
 ## 3 calculate sequencing depth throughout the region
-## 4 construct a cigar string.. 
+## 4 construct a cigar string..
+## 5 return qualities
 ## flag.filter: a vector of two elements, [ required flags, banned flags ]
 ## min.mq = minimum mapping quality
 ## min.ql = minimum query length (as reported in the bam_core field; this is not the
@@ -147,6 +148,14 @@ alt.nuc <- function(alt){
     r <- intToUtf8( bitwAnd( bitwShiftR( alt, 8 ), 0x000000FF ) )
     q <- intToUtf8( bitwAnd( alt, 0x000000FF ) );
     matrix(sapply( strsplit(c(r, q), ""), eval), ncol=2)
+}
+
+## convert an int to two nucs and a quality in a dataframe:
+alt.nuc.q <- function(alt){
+    r <- intToUtf8( bitwAnd( bitwShiftR( alt, 8 ), 0x000000FF ) )
+    q <- intToUtf8( bitwAnd( alt, 0x000000FF ) );
+    qual <- bitwAnd( bitwShiftR( alt, 16 ), 0x000000FF )
+    data.frame( ref=r, query=q, qual=qual )
 }
 
 ## extract query insertions from the ops table

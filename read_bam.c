@@ -1041,7 +1041,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // If depth requested we can add this to the data structure immediately..
   int *seq_depth = 0;
   int region_length = 1 + region_range[1] - region_range[0];
-  if(opt_flag & AR_CIG){
+  if(opt_flag & AR_Q_DEPTH){
     SET_VECTOR_ELT( ret_data, 6, allocVector(INTSXP, region_length) );
     seq_depth = INTEGER(VECTOR_ELT(ret_data, 6));
     memset( seq_depth, 0, sizeof(int) * region_length );

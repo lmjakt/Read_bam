@@ -125,6 +125,7 @@ void cigar_string_read( struct cigar_string *cs, bam1_t *b ){
   if( cs->buf_size == 0 )
     cigar_string_grow(cs);
   cs->string_length = 0;
+  cs->buffer[0] = 0; // NULL terminated!
   uint32_t *cig = bam_get_cigar(b);
   int32_t cig_l = b->core.n_cigar;
   for(int i=0; i < cig_l; ++i){
@@ -1712,6 +1713,7 @@ SEXP bam_flag(SEXP flags_r){
 }
   
 
+
 // Return the lengths of the sequences
 // as a named vector
 // CHANGE: have a function to validate the bam_ptr_r as we use that more than
@@ -1735,6 +1737,28 @@ SEXP target_lengths(SEXP bam_ptr_r){
   return(t_lengths_r);
 }
 
+// This should only be called from extract_aux_tags
+// As the terms are very specific; 
+void set_aux_default_values(unsigned int i, char *aux_types, int n, SEXP ret_data, uint64_t tags_set){
+  for(int k=0; k < n; ++k){
+    if((tags_set >> k) & 1 == 1)
+      continue;
+    switch(aux_types[k]){
+    case 'A':
+    case 'C':
+    case 'S':
+    case 'I':
+      INTEGER(VECTOR_ELT(ret_data, k))[i] = R_NaInt;
+      break;
+    case 'F':
+      REAL(VECTOR_ELT(ret_data, k))[i] = R_NaN;
+      break;
+    default:
+      SET_STRING_ELT( VECTOR_ELT(ret_data, k), i, mkChar(""));
+    }
+  }
+}
+
 // This function extracts the values of specific auxiliar fields
 // from aux strings. This could probably be done more efficiently
 // by using the bam representation and calling the accessor functions
@@ -1748,8 +1772,8 @@ SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
     error("aux_r must be a string with length of 1 or longer");
   if(TYPEOF(aux_tags_r) != STRSXP || length(aux_tags_r) < 1)
     error("aux_tags_r must be a string with length of 1 or longer");
-  if(TYPEOF(aux_types_r) != STRSXP || length(aux_types_r) < 1)
-    error("aux_types_r must be a string with length of 1 or longer");
+  if(TYPEOF(aux_types_r) != STRSXP || length(aux_types_r) < 1 || length(aux_types_r) > 64)
+    error("aux_types_r must be a string with length between 1 and 64 (inclusive)");
   if(length(aux_types_r) != length(aux_tags_r))
     error("The length of aux_types_r and aux_tags_r must be the same");
   // tag values should be two characters;
@@ -1765,13 +1789,13 @@ SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
   // where: A single char, c int8, C uint 8, s int16, S uint16, i int32, I uint32, f float (32 bit)
   // Z: null terminated char array, H: null terminated char array (of Hex representations)
   // We can distinguish the upper case of all of these by their last 5 bits
-  // which give values of, 3, 19, 9, 6, 26, and 8 respectively.
+  // which give values of, 1, 3, 19, 9, 6, 26, and 8 respectively.
   // That means we can check if a type is defined by AND operations on a 32 bit unsigned
   // integer
   // note that toupper is equivalent to & 0xDF
   uint8_t up_mask = 0xDF;
-  // This is with bits 17, 3, 19, 9, 6, 26 and 8 set.
-  uint32_t type_check = 0x020501A4;
+  // This is with bits 1, 3, 19, 9, 6, 26 and 8 set.
+  uint32_t type_check = 0x020401A5;
   // to access the upper three bits of a char:
   uint8_t left_mask = 0xE0;
   uint8_t left_check = 0x40;
@@ -1826,6 +1850,10 @@ SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
     char **terms = split_string(aux, '\t', &n);
     int *int_values;
     double *double_values;
+    // WARNING: the use of tags_set means that we are limiting ourselves to
+    // a maximum of 64 tags. I need to check that somewhere above;
+    // if a value for a tag is found the corresponding bit will be set to 1
+    uint64_t tags_set = 0;
     for(unsigned int j=0; j < n; ++j){
       // check and then free the word..
       // the term should be a minimum of length 6
@@ -1838,6 +1866,7 @@ SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
 	    // do something useful depending on if the type
 	    // fits.
 	    if(aux_types[k] == (terms[j][3] & up_mask)){
+	      tags_set |= (1 << k);
 	      // Everything fits. Now we need to do something different depending on what the
 	      // type is.
 	      switch(aux_types[k]){
@@ -1863,6 +1892,8 @@ SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
 	  }
 	}
       }
+      // need a function to set default values..
+      set_aux_default_values(i, aux_types, length(aux_tags_r), ret_data, tags_set);
       free( terms[j] );
     }
     free(terms);

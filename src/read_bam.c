@@ -3,7 +3,7 @@
 #include <string.h>
 #include <htslib/sam.h>
 #include <htslib/vcf.h>
-#include "split_string.h"
+#include "common.h"
 
 // This provides acces to bam / sam and bcf / vcf files.
 
@@ -35,36 +35,7 @@
 #define AR_CIG 8     // construct and return a cigar string
 #define AR_Q_QUAL 16 // return query qualities (ascii encoded; not phred)
 
-// the following are true for the encoding used in cig_ops tables;
-// it's BAM encoding + 1
-#define CIG_M 1
-#define CIG_I 2
-#define CIG_D 3
-#define CIG_N 4
-#define CIG_S 5
-#define CIG_H 6
-#define CIG_P 7
-#define CIG_EQ 8
-#define CIG_X 9
 
-// The number of rows in an cigar operations table
-#define CIG_OPS_RN 8
-#define OPS_INIT_SIZE 256
-// a global variable; I feel dirty;
-const char* cig_ops_rownames[CIG_OPS_RN] = {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
-
-#define Q_INFO_RN 6
-const char* q_info_rownames[Q_INFO_RN] = {"qlen", "q.cigl", "q.beg", "q.end", "ops.beg", "ops.end"};
-
-#define MM_INFO_RN 6
-const char* mm_info_rownames[MM_INFO_RN] = {"al.i", "q.pos", "mod", "mod.n", "mod.l", "r.pos"};
-
-// the following is not that useful..
-// #define BIT_F( F ) ( 1 << F )
-// but maybe if we called it:
-// #define SET_F( F ) ( 1 << F )
-// to set a bit. Or maybe this is more reasonable:
-// #define SET_F( V, F ) ( (V | (1 << F)) )
 
 // and a vector of return types:
 //  Note that these are specific to sam_read_n()
@@ -74,13 +45,6 @@ const unsigned int R_ret_types[12] = {STRSXP, INTSXP, INTSXP, INTSXP, INTSXP, //
 				      STRSXP, INTSXP, INTSXP, INTSXP, // CIGAR, RNEXT, PNEXT, TLEN
 				      STRSXP, STRSXP, STRSXP}; // SEQ, QUAL, AUX
 
-// not sure why this isn't in a header somewhere
-// but I can't find it.
-// this is a copy of seq_nt16_str defined as a non null-
-// terminated vector array
-const char *nuc_encoding = "=ACMGRSVTWYHKDBN";
-// if we want to reverse complement
-const char *nuc_encoding_rc = "=TGKCYSBAWRDMHVN";
 
 // We want to hold connection data as an external pointer
 // to the relevant R data structures:
@@ -190,186 +154,6 @@ static void finalise_bcf_ptrs(SEXP ptr_r){
   R_ClearExternalPtr(ptr_r);
 }
 
-// These are structures for dynamically growing a return data set;
-// They would be better off in a library somewhere as I keep repeating
-// this code.
-
-// row major? as in R
-struct i_matrix {
-  int *data;
-  size_t nrow;
-  size_t ncol;
-  size_t row;
-  size_t col;
-};
-
-struct i_matrix init_i_matrix(size_t nrow, size_t ncol){
-  struct i_matrix m;
-  m.nrow=nrow;
-  m.ncol=ncol;
-  m.row=0;
-  m.col=0;
-  m.data = malloc( sizeof(int) * m.nrow * m.ncol );
-  return(m);
-}
-
-void double_columns( struct i_matrix *m ){
-  if(m->ncol == 0){
-    m->ncol = 2;
-    m->data = malloc(sizeof(int) * m->nrow * m->ncol);
-    return;
-  }
-  int *old = m->data;
-  size_t sz = sizeof(int) * m->nrow * m->ncol;
-  m->data = malloc( 2 * sz );
-  memcpy( m->data, old, sz );
-  m->ncol = m->ncol * 2;
-  free(old);
-}
-
-// push numbers in c onto the matrix
-void push_column( struct i_matrix *m, int *c ){
-  if(m->col >= m->ncol)
-    double_columns( m );
-  memcpy( m->data + m->col * m->nrow, c, sizeof(int) * m->nrow );
-  m->col++;
-}
-
-
-struct str_array {
-  size_t capacity;
-  size_t length;
-  char **strings;
-};
-
-struct str_array init_str_array(size_t init_size){
-  struct str_array str;
-  str.capacity = init_size;
-  str.length = 0;
-  str.strings = malloc(sizeof(char*) * init_size);
-  return(str);
-}
-
-void double_str_array(struct str_array *str){
-  char **old = str->strings;
-  str->capacity = str->capacity * 2;
-  str->strings = malloc(sizeof(char*) * str->capacity );
-  memcpy( str->strings, old, sizeof(char*) * str->length );
-  free(old);
-}
-
-void str_array_push_cp(struct str_array *str, const char *word){
-  if(str->length >= str->capacity)
-    double_str_array(str);
-  size_t l = strlen(word);
-  str->strings[str->length] = malloc(sizeof(char) * (l + 1));
-  memcpy( str->strings[str->length], word, sizeof(char) * (l + 1));
-  str->length++;
-}
-
-// copies n bytes; terminates with a 0
-void str_array_push_cp_n(struct str_array *str, const char *word, size_t n){
-  if(str->length >= str->capacity)
-    double_str_array(str);
-  str->strings[str->length] = malloc(sizeof(char) * (n + 1));
-  str->strings[str->length][ n ] = 0;
-  memcpy( str->strings[str->length], word, sizeof(char) * (n));
-  str->length++;
-}
-
-
-void str_array_push(struct str_array *str, char *word){
-  if(str->length >= str->capacity)
-    double_str_array(str);
-  str->strings[str->length] = word;
-  str->length++;
-}
-
-
-void str_array_free(struct str_array *str){
-  for(size_t i=0; i < str->length; ++i)
-    free(str->strings[i]);
-  free(str->strings);
-}
-
-// I suspect that libc may have some more efficient
-// implementation of this:
-struct vector {
-  size_t capacity;
-  size_t length;
-  size_t unit_size;
-  void *data;
-};
-
-struct vector_init(size_t capacity, size_t unit_size){
-  struct vector v;
-  v.capacity = capacity;
-  v.length = 0;
-  v.unit_size = unit_size;
-  v.data = malloc( capacity * unit_size );
-  return(v);
-}
-
-void vector_push(struct vector *v, void *data){
-  if(v->length + 1 > v->capacity){
-    v->capacity *= 2;
-    v->data = realloc(v->data, v->capacity * v->unit_size);
-  }
-  memcpy( v->data + v->length, data, v->unit_size );
-}
-
-void* vector_at(struct vector *v, size_t i){
-  if(i < v->length)
-    return( v->data + i * unit_size );
-}
-
-void vector_free(struct vector *v){
-  free(v->data);
-  v->data = 0;
-  v->capacity = 0;
-  v->length = 0;
-}
-
-void vector_clear(struct vector *v){
-  v->length = 0;
-}
-
-// and another reimplementation; I _really_ should find if there
-// are standard vector functions (if not consider learning
-// how to use kvec and other goodies. In particular klib actually
-// has sequence alignment functions as well. That look like they
-// are very well optimised.
-
-struct vectori {
-  int *data;
-  size_t n; // the number of elements stored
-  size_t m; // the capacity
-};
-
-struct vectori_init(size_t size){
-  struct vectori v;
-  v.n = 0;
-  v.m = size;
-  v.data = (v.m > 0) ? malloc(v.m * sizeof(int)) : 0;
-  return(v);
-}
-
-void vectori_push(struct vectori *v, int d){
-  if(v->n >= v->m){
-    v->m = (v->m == 0) ? 1 : v->m << 1;
-    v->data = realloc(v->data, sizeof(int) * v->m);
-  }
-  v->data[v->n] = d;
-  v->n++;
-}
-
-void vectori_free(struct vectori *v){
-  free(v->data);
-  v->data = 0;
-  v->m = 0;
-  v->n = 0;
-}
-    
 
 // Convenience function that makes a char sequence out of
 // the sequence in bam1_t.data
@@ -1066,6 +850,7 @@ int read_next_entry( struct bam_ptrs *bam, bam1_t *b){
 //     bit 2 = return positions that differ from reference. Requires that reference is given
 //     bit 3 = calculate the coverage depth
 //     bit 4 = reconstruct a cigar string
+//     bit 5 = return base qualities
 //  If ref_seq_r AND (flag_filter & 3 == 3) then return all positions where
 //  there is a nucleotide difference
 //  min_mq_r : A minimum mapping quality
@@ -1166,7 +951,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // For sequence variants in the reads:
   //  const char* var_coord_row_names[] = {"seq.id", "r.pos", "q.pos", "nuc"};
   struct i_matrix var_coord = init_i_matrix( 4, init_size );
-  SEXP var_coord_row_names_r = PROTECT(mk_rownames( (const char*[]){"seq.id", "r.pos", "q.pos", "nuc"}, 4 ));
+  SEXP var_coord_row_names_r = PROTECT(mk_rownames( (const char*[]){"al.i", "r.pos", "q.pos", "nuc"}, 4 ));
 
   int column[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   // dimNames_r used to set rownames for the main return table
@@ -1182,7 +967,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   //                of length bam->core.l_qseq
   // Currently there is no option to return the quality scores; but I can add qualities
   // at mismatched position without modifying any data structures. I
-  char *qqual=0; //
+  unsigned char *qqual=0; //
   while((r=sam_itr_next(bam->sam, b_itr, al)) >= 0){
     qseq = qqual = 0;
     uint32_t flag = (uint32_t)al->core.flag;
@@ -1832,7 +1617,7 @@ SEXP target_lengths(SEXP bam_ptr_r){
 // As the terms are very specific; 
 void set_aux_default_values(unsigned int i, char *aux_types, int n, SEXP ret_data, uint64_t tags_set){
   for(int k=0; k < n; ++k){
-    if((tags_set >> k) & 1 == 1)
+    if(((tags_set >> k) & 1) == 1)
       continue;
     switch(aux_types[k]){
     case 'A':
@@ -2261,56 +2046,59 @@ SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
 //    is correct biologically, but what is easy to encode.
 // 2. All upstream intron positions must be identical.
 
-SEXP merge_transcripts(SEXP ops_r, SEXP flags_r,
-		       SEXP max_distance_r, SEXP flag_filter_r){
-  // In order to simplify the logic, this function will make use of a set
-  // of locally defined structs; these will contain only integers;
-  if(TYPEOF(ops_r) != INTSXP || length(ops_r) < 8)
-    error("ops_r should be an integer matrix with 8 columns");
-  if(TYPEOF(flags_r) != INTSXP || TYPEOF(max_distance_r) != INTSXP)
-    error("flags_r AND max_distance_r should be integer vectors");
-  if(TYPEOF(flag_filter_r) != INTSXP || length(flag_filter_r) != 2)
-    error("flag_filter_r should be an integer vector of length 2");
-  SEXP op_dims_r = getAttrib(ops_r, R_DimSymbol);
-  if(length(op_dims_r) != 2)
-    error("ops_r should be a matrix");
-  int *dims = INTEGER(op_dims_r);
-  // As of writing we must have at least 8 columns (dims[1])
-  int ops_ncol = 8;
-  if(dims[1] != ops_ncol)
-    error("The ops_r table should have 8 columns. Specified table has: %d", dims[1]);
-  int ops_nrow = dims[0];
-  if(ops_nrow < 1)
-    error("The ops_r table must have at least one row");
-  int *ops = INTEGER(ops_r);
-  int *ops_ali = ops;
-  int *ops_op = ops + ops_nrow;
-  int *ops_r0 = ops + (3 * ops_nrow);
-  int *ops_r1 = ops + (5 * ops_nrow);
+
+// This should be refactored to use code in a separate compilation unit
+// This one is getting too complex.
+/* SEXP merge_transcripts(SEXP ops_r, SEXP flags_r, */
+/* 		       SEXP max_distance_r, SEXP flag_filter_r){ */
+/*   // In order to simplify the logic, this function will make use of a set */
+/*   // of locally defined structs; these will contain only integers; */
+/*   if(TYPEOF(ops_r) != INTSXP || length(ops_r) < 8) */
+/*     error("ops_r should be an integer matrix with 8 columns"); */
+/*   if(TYPEOF(flags_r) != INTSXP || TYPEOF(max_distance_r) != INTSXP) */
+/*     error("flags_r AND max_distance_r should be integer vectors"); */
+/*   if(TYPEOF(flag_filter_r) != INTSXP || length(flag_filter_r) != 2) */
+/*     error("flag_filter_r should be an integer vector of length 2"); */
+/*   SEXP op_dims_r = getAttrib(ops_r, R_DimSymbol); */
+/*   if(length(op_dims_r) != 2) */
+/*     error("ops_r should be a matrix"); */
+/*   int *dims = INTEGER(op_dims_r); */
+/*   // As of writing we must have at least 8 columns (dims[1]) */
+/*   int ops_ncol = 8; */
+/*   if(dims[1] != ops_ncol) */
+/*     error("The ops_r table should have 8 columns. Specified table has: %d", dims[1]); */
+/*   int ops_nrow = dims[0]; */
+/*   if(ops_nrow < 1) */
+/*     error("The ops_r table must have at least one row"); */
+/*   int *ops = INTEGER(ops_r); */
+/*   int *ops_ali = ops; */
+/*   int *ops_op = ops + ops_nrow; */
+/*   int *ops_r0 = ops + (3 * ops_nrow); */
+/*   int *ops_r1 = ops + (5 * ops_nrow); */
   
-  // check that the flags vector is of the correct length:
-  // This assumes that the ops is sorted by alignment id with the largest
-  // last:
-  // and -1 because the table is from R where counting is from 1.
-  int flags_n = length(flags_r);
-  if(flags_n != (ops_ali[ops_nrow-1] - 1))
-    error("There must be a flag for every entry");
-  int *flags = INTEGER(flags_r);
+/*   // check that the flags vector is of the correct length: */
+/*   // This assumes that the ops is sorted by alignment id with the largest */
+/*   // last: */
+/*   // and -1 because the table is from R where counting is from 1. */
+/*   int flags_n = length(flags_r); */
+/*   if(flags_n != (ops_ali[ops_nrow-1] - 1)) */
+/*     error("There must be a flag for every entry"); */
+/*   int *flags = INTEGER(flags_r); */
   
-  if(length(max_distance_r) != 1)
-    error("max_distance_r should have a length of 1");
-  int max_distance = INTEGER(max_distance_r)[0];
+/*   if(length(max_distance_r) != 1) */
+/*     error("max_distance_r should have a length of 1"); */
+/*   int max_distance = INTEGER(max_distance_r)[0]; */
   
-  // The flag_filter must specify the orientation of reads; forward or reverse
-  // This implies that flag 16 (0x10) must either be required or banned
-  // It is also clear that no flags should both be required and banned
-  int *flag_filter = INTEGER(flag_filter_r);
-  // As I understand it, the following operation is technically undefined
-  // for signed integers; but R doesn't have unsigned ints...
-  if(flag_filter[0] & flag_filter[1] > 0 ||
-     (0x10 & (flag_filter[0] ^ flag_filter[1])) != 0x10)
-     error("Improper flag filter set; either common flags or direction not specified");
-}
+/*   // The flag_filter must specify the orientation of reads; forward or reverse */
+/*   // This implies that flag 16 (0x10) must either be required or banned */
+/*   // It is also clear that no flags should both be required and banned */
+/*   int *flag_filter = INTEGER(flag_filter_r); */
+/*   // As I understand it, the following operation is technically undefined */
+/*   // for signed integers; but R doesn't have unsigned ints... */
+/*   if(flag_filter[0] & flag_filter[1] > 0 || */
+/*      (0x10 & (flag_filter[0] ^ flag_filter[1])) != 0x10) */
+/*      error("Improper flag filter set; either common flags or direction not specified"); */
+/* } */
 
 static const R_CallMethodDef callMethods[] = {
   {"load_bam", (DL_FUNC)&load_bam, 2},

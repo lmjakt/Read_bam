@@ -1,4 +1,4 @@
-source('read_bam.R')
+source('../read_bam.R')
 
 read.fasta <- function(fn){
     lines <- readLines(fn)
@@ -19,6 +19,24 @@ region <- "KI270733.1"
 range <- c(130000, 131000)
 
 bam.ptr <- load.bam(bam.f, bam.i)
+tl <- target.lengths(bam.ptr)
+
+system.time(
+    bam.reg <- aligned.region(region, c(0, tl[region]), bam.ptr,
+                              opt.flag=2^5-1, transpose=TRUE, ref.seq=ref.seq)
+)
+## on my laptop:
+##  user  system elapsed 
+## 0.025   0.000   0.025
+
+## for:
+nrow(bam.reg$diff)
+## [1] 6594
+nrow(bam.reg$al)
+## [1] 6494
+nrow(bam.reg$ops)
+## [1] 15935
+
 bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=1L, transpose=TRUE)
 tmp1 <- aligned.region(region, range, bam.ptr, opt.flag=3L)
 
@@ -30,7 +48,6 @@ bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=7L, ref.seq=ref.seq, 
 bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=7L, ref.seq=ref.seq, transpose=TRUE)
 
 bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=3L, transpose=TRUE)
-
 
 tlengths <- target.lengths(bam.ptr)
 tlengths[region]
@@ -48,6 +65,18 @@ system.time(
 
 ## user  system elapsed 
 ## 0.021   0.001   0.021 
+
+bam.sc23.f <- "scaffold_23.bam"
+sc23 <- load.bam( bam.sc23.f, paste0(bam.sc23.f, ".bam") )
+sc23.tl <- target.lengths( sc23 )
+
+system.time(
+    sc23.al <- aligned.region("scaffold_23", c(0, sc23.tl["scaffold_23"]), sc23, transpose=TRUE,
+                              opt.flag=(1 + 4 + 8 + 5))
+)
+## on my laptop:
+##  user  system elapsed 
+## 0.699   0.057   0.756 
 
 
 bam.reg.3 <- aligned.region(region, range.2, bam.ptr, transpose=TRUE, opt.flag=7L, ref.seq=ref.seq)

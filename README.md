@@ -1,32 +1,377 @@
-# read_bam
+---
+title: read_bam
+---
 
-A few functions to read bam data into R sessions. This probably
-overlaps with functionality in rbamtools and rsamtools, but there are
-some specific things that I want to play around with starting from a
-simple code base. And mainly I want to avoid reading too much
-documentation.
+# Motivation
 
-To start with the functions will be limited to handling a single bam
-indexed bam file, but this can obviously be combined from R.
+`read_bam` provides a few functions to read and parse bam data into native R
+data structures. This probably overlaps with functionality in `rbamtools` and
+`rsamtools`, but it differs in that it has minimal external dependancies and
+all data is returned as core `R` data structures that can be used directly.
 
-The code relies on htslib which needs to be installed somewhere on the
-target system. Modify `Makevars` to include the path to the htslib
-headers, and make sure that the linker is configured to look for
-libraries (shared objects, `.so` files) where the htslib coexists (if
-root, modify `/etc/ld.so.conf.d` appropriately. If not root, modifying
-`LD_LIBRARY_PATH` may also work.  Note though that you should be
-familiar with the consequences of changing `LD_LIBRARY_PATH`.
+The code relies on `htslib` which needs to be installed somewhere on the target
+system. Modify `Makevars` to include the path to the htslib headers, and make
+sure that the linker is configured to look for libraries (shared objects,
+`.so` files) where `htslib` can be found . If you have root access, you may
+need to modify `/etc/ld.so.conf.d` appropriately and run `ldconfig`. If not
+root, modifying `LD_LIBRARY_PATH` may also work. Note though that you should
+be familiar with the consequences of changing `LD_LIBRARY_PATH`.
 
-For documentation see the source `read_bam.R`, or failing that
-`read_bam.c`. Note that the functions only handle `bam` files indexed
-with `bai` indices.
+I suspect getting this to work on a Windows machine is likely to be
+difficult. I don't suggest you try; instead install linux and live happily
+ever after (or miserably; I guess it depends).
 
-My motivation for writing this is to a large extent to have a *simple*
-code base with minimal dependancies that can reasonably efficiently
-convert bam data into data structures that allow visualisation and
-statistical analyses in `R`. `read_bam.c`, is currently 525 lines of
-code, which is a little more than I would like, but it is not *too*
-difficult to read. Unfortunately the amount of `C` code will probably
-grow.
+For documentation on how to use the functions, see further down in this file,
+the sources `read_bam.R`, and `src/read_bam.c`. For [very messy] examples, see
+the `tests/test.R` file.
 
-For [very messy] examples, see the `test.R` file.
+My motivation for writing this was to a large extent to have a *simple* code
+base with minimal dependancies that can reasonably efficiently convert bam
+data into data structures that allow visualisation and statistical analyses in
+`R`. `read_bam.c`, is currently around 2000 lines of code, which is a little
+more than I would like, but it is not *too* difficult to read. Unfortunately
+the amount of `C` code will probably grow. Simplicity to me, primarily means
+reducing the number of levels of abstraction used; this means that it is
+easier to work out what the code does.
+
+
+# Installation (compilation)
+
+To use `read_bam` you will need to:
+
+1. Install the `htslib` library. Instructions are available from the `htslib`
+   github repository. You will need to be aware of where the `include` and
+   `library` files are installed to. If you are root and use the usual,
+   `./configure`, `make` and `make install`, then this will be in
+   `/usr/local/`. If you do not have root access, have a look at the output of
+   `./configure --help`. You can set the `prefix` to a location in your own
+   home directory.
+2. Make the `htslib` library available to the linker. To do this, read up on
+   the use of the environment variable `LD_LIBRARY_PATH` and the `ldconfig`
+   program if you don't know what this means. If you have a working `samtools`
+   installation then it is likely that this has already been done. But you need
+   to make sure that the header files that are included during installation
+   refer to the library that the linker will load.
+3. Compile the `read_bam` source code in order to create a shared object
+   (`.so`) file (on windows these are known as `.dll` for dynamically linked
+   libraries). Fortunately, `R` has a function for doing this and as long as
+   you are using a linux system it is generally straightforward.
+
+To compile the `read_bam` library, change to the `src/` subdirectory. Have a
+look at the `Makevars` file. On my system it contains the following:
+
+```sh
+## CPPFLAGS=-I/usr/local/include
+## CFLAGS=-lhts
+PKG_LIBS=-lhts
+```
+
+The two first lines are commented out; these contain options that should be
+passed to `gcc` (the compiler) when compiling the source code (I should remove
+these at some point in the future). `CPPFLAGS` contain options related to the `C`
+pre-processor; here it specifies a directory that may contain header files; the
+second one states that the executable should be linked to the `libhts.so`
+library.
+
+If you have installed `libhts` to a non-standard directory, then you
+should probably include something like:
+
+```sh
+PKG_CPPFLAGS='-I<libhts installation directory>'
+```
+
+in the `Makevars` file.
+
+Change to the `src` subdirectory and use `R CMD SHLIB` to create the library
+file:
+
+```sh
+## make sure you have changed directory to the place you have
+## downloaded the files to and:
+cd src
+R CMD SHLIB read_bam.c common.c
+```
+
+This should produce three new files: `read_bam.o`, `common.o` and
+`read_bam.so`. The last of these three is the library file. This needs to
+be loaded in order to use the compiled functions. This is done using
+the `dyn.load`, which is called as the first line from the `read_bam.R` file.
+Hence you can simply source the `read_bam.R` file in order for the functions
+to be available (see usage).
+
+# Usage
+
+To use the functions. From an `R` session:
+
+```R
+source("<path_to_code/read_bam.R>")
+```
+
+You may get some error messages about `libhts` not being available; if this
+is the case then it means that your linker has not been configured to look
+for `.so` files in the location where `libhts` has been installed.
+
+Sourcing `read_bam.R` defines a number of wrapper and accessory functions into
+your workspace. This is different from what happens when you use `library` to
+import a package; in particular, all functions that are defined in
+`read_bam.R` can be seen as normal `R` objects when you call `ls()`; this is
+not always ideal, but I currently have no desire to make the functions
+available as part of a proper `R` package as doing so precludes changing the
+API in future versions.
+
+To access data in `bam` or `bcf` files you first need to create a handle for
+the files; this is done using the `load.bam` or `load.bcf` functions. These
+return what are known as external pointers; you cannot do very much with them
+yourself, but you will need to pass them as arguments to functions accessing
+data from `bam` and `bcf` files. Note that the external pointers do not
+survive R save and reload cycles. They will hence need to be recreated if you
+save and then reload your image.
+
+## A use example
+
+If I have installed `read_bam` in `~/R/Read_bam`, have a sorted and indexed
+bam file in my current working directory called `test.bam` with an index
+called `test.bam.bai` then the following can be used to obtain all alignments
+to the longest reference sequence:
+
+```R
+## import the functions using source
+source("~/R/Read_bam/read_bam.R")
+
+## Create the external pointer
+bm <- load.bam("test.bam", "test.bam.bai")
+
+## Obtain the lengths of the reference sequences as
+## a named integer vector:
+ref.lengths <- target.lengths(bm)
+
+## sort ref.lengths long to short
+ref.lengths <- sort(ref.lengths, decreasing=TRUE)
+
+## obtain all alignments from the longest reference:
+als <- aligned.region(names(ref.lengths)[1], c(0, ref.lengths[1]),
+                      transpose=TRUE)
+## als, is a named list containing a number of different entries.
+## many of which will be NULL in this case. For details see the
+## detailed explanations of the function parameters further down.
+```
+
+# Functions provided
+
+## `load.bam(<bam_file>, <bamindex_file>)`
+
+Opens a `bam` file and associates it with an external pointer.
+
+Arguments:
+
+1. `bam_file`: the name of a bam file.  
+    Required.
+2. `bamindex_file`: the name of a bam index file.  
+   Optional, if not specified, defaults to the value of `bam_file` with a
+   `.bai` suffix appended. If the file does not exist, then functions using
+   the index will not be available.
+
+Value:
+
+An external pointer that should be passed to functions that read from bam
+files.
+
+Note that the function may also work with `sam` files, though without any
+functions requiring an index.
+
+## `load.bcf(<bcf_file>, <bcf_index>)`
+
+Opens a `bcf` file and associates it with an external pointer.
+
+Arguments are as for `load_bam`, except that the name of the index file
+defaults to an empty string and must be specified if index operations are
+to be used.
+
+## `set.bam.iterator(<bam.ptr>, <region>, <range>`)
+
+Sets the read position of a sorted and indexed bam file to the position
+specified by `<region>` and `<range>` (optional).
+
+Arguments:
+
+1. `bam.ptr`: an external pointer as returned by `load.bam()`.
+2. `region`: the name of a reference sequence.
+3. `range`: two integer values specifying the begin and end of the region from
+   which alignments should be obtained.
+
+Value:
+
+An external pointer; it should not be necessary to handle this as the function
+changes the state of its first argument.
+
+## `clear.bam.iterator(<bam.ptr>)`
+
+Resets the read position of the external pointer given as its first argument.
+
+## `aligned.region()`
+
+Returns alignment data for a specified region. This requires that the bam file
+has been sorted and that an index has been created and specified when creating
+the bam handle (`load.bam()`).
+
+### Arguments:
+
+1. `region`: the name of a reference sequence (a single element character
+   vector).
+2. `range`: the beginning and end positions from which alignments should be
+   extracted. Should be given as a two element numeric vector.
+3. `transpose=TRUE`: If true, transpose matrix data structures to have a fixed
+   number of columns and variable numbers of rows.
+4. `flag.filter=c(-1,-1)`: A numeric vector of two elements: required and banned
+   flags. These act on the sam flag field to include and exclude specific
+   types of alignments. Users need to understand bitwise flags in order to
+   specify these. The default value accepts alignments with any flag set.
+5. `opt.flag=0`: A bitwise flag specifying optional data that can be returned
+   in addition to the primary alignment coordinates. The bits used are:
+
+   ------------------------------------------------------------------------
+    bit   decimal    hexadecimal  meaning
+   ----  -------- --------------  -----------------------------------------
+      1         1            0x1  Return query sequences as a character 
+                                  vector named `query`
+   
+      2         2            0x2  Return positions that differ from a
+                                  reference sequence supplied by the ref.seq
+                                  argument.
+   
+      3         4            0x4  Calculate sequencing depth throughout the
+                                  specified region.
+   
+      4         8            0x8  Construct cigar strings for alignments.
+   
+      5        16           0x10  Return individual base qualities.
+   ------------------------------------------------------------------------
+   
+	The argument is constructed by a bitwise `OR` of the individual bits.
+6. `ref.seq=""`: The sequence of the region specified as the first
+   argument. This sequence is required if the `opt.flag` includes 0x2. It
+   should be given as a single element character vector.
+7. `min.mq=0`: The minimum mapping quality.
+8. `min.ql=0`: The minimum query length.
+
+### Value:
+
+`aligned_region()` returns a named list containing the following elements:
+
+1. `ref`: The name of the region specified. This will always be a single
+   element character vector.
+2. `query`: The names of the query sequences for the returned alignments. A
+   character vector with one entry for every alignment.
+3. `al`: A numeric matrix. If `transpose` is `TRUE`, then it will have a
+   fixed number of columns:
+
+   ----------------------------------------------------------------------------
+   column    meaning
+   --------- ----------------------------------------------------------------------
+   flag      The sam flag of the alignment
+   
+   r.beg     The reference start position
+   
+   r.end     The reference end position
+   
+   q.beg     The reference start position
+   
+   q.end     The reference end position
+   
+   mqual     The mapping quality
+   
+   qlen      The query length. Note that this is affected by hard clipping and
+             may not represent the read length.
+   
+   qclen     The query length inferred from the cigar data. This should be the
+             same as qlen if the cigar data does not include any hard clip
+   	      operations.
+   
+   ----------------------------------------------------------------------------
+
+4. `ops`: The cigar data for all alignments encoded as a single integer
+   matrix. If `transpose` is `TRUE` it will have the following columns:
+
+   --------------------------------------------------------------------------------
+   column    meaning
+   --------- -----------------------------------------------------------------------
+   al.i      The index of the alignment for the current operation. If `transpose` is
+   	         `TRUE`, then this will correspond to the row number in the `al`
+   		     matrix.
+   
+   op        The cigar operation represented as an integer value with
+             "MIDNSHP=XB" mapping to the range 1-10.
+   
+   type      1, 2, or 3, depending on whether the operation consumes the query,
+             reference or both respectively.
+   
+   r0        The reference op start position (0 or 1 based?)
+   
+   q0        The query op start position (0 or 1 based?)
+   
+   r1        The reference op end position plus one (such that r1 - r0 gives the
+             length of the operation if the type is 2 or 3).
+   
+   q1        The query op end position plus one.
+   
+   op.l      The op length.
+   --------------------------------------------------------------------------------
+
+5. `seq`: If `opt.flag` includes 0x1 then a character vector giving the query
+   sequences as present in the bam file. Otherwise `NULL`.
+
+6. `diff`: `NULL` If `opt.flag` does not include 0x2. Otherwise, a matrix
+   giving the positions and bases in the reference and query of any
+   mis-matched bases. The columns or rows of this matrix are:
+   
+   --------------------------------------------------------------------------------
+   column    meaning
+   --------- -----------------------------------------------------------------------
+   al.i      The index of the alignment for the current position. If `transpose` is
+   	         `TRUE`, then this will correspond to the row number in the `al`
+   		     matrix.
+   r.pos     The reference position (1 based).
+
+   q.pos     The query position (1 based).
+
+   nuc       The reference and query bases and the query quality encoded in the lower 24 bits
+             of a 32 bit integer. These can be extracted using the
+             `alt.nuc.q()` function.
+   --------------------------------------------------------------------------------
+
+7. `depth`: NULL if `opt.flag` does not include 0x4. Otherwise an integer
+   vector the same length as the region requested. Each entry in the vector
+   gives the sequence depth at the corresponding reference position.
+
+8. `cigar`: NULL if `opt.flag` does not include 0x8. Otherwise a character
+   vector with one element for each alignment holding cigar strings for the
+   alignments.
+
+9. `qual`: NULL if `opt.flag` does not include 0x10. Otherwise a character
+   vector with one element for each alignment. Each element contains a
+   (usually) non-printable string. This can be converted to integer quality
+   values using the `utf8ToInt()` function. (POTENTIAL BUG: 0 quality values
+   may end up being interpreted as end of strings. I need to confirm this).
+
+The key elements of this list are the `al` and `ops` matrices. In particular
+the `ops` makes it possible to visualise all alignments with a single call to
+`segments` after setting up a suitable plotting surface. For example:
+
+```R
+## here als, is a list returned by a call to aligned.region()
+## with transpose=TRUE
+
+## set up a plotting surface
+plot.new()
+with(als, plot.window(xlim=range(al[,c("r.beg", "r.end")]),
+                      ylim=c(0, max(al[,"q.end"]))))
+## draw all alignments:
+with(als, segments(ops[,'r0'], ops[,'q0'], ops[,'r1'], ops[,'q1']))
+
+## add some axes...
+axis(1)
+axis(2)
+
+```
+
+

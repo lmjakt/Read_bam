@@ -1,8 +1,8 @@
 ## this performs some magic that should not be necessary if created
 ## as a package
-dyn.load( paste(dirname(sys.frame(1)$ofile), "read_bam.so", sep="/") )
+dyn.load( paste(dirname(sys.frame(1)$ofile), "src/read_bam.so", sep="/") )
 
-load.bam <- function(bam, bam.index=""){
+load.bam <- function(bam, bam.index=paste0(bam, ".bai")){
     .Call("load_bam", bam, bam.index);
 }
 
@@ -34,7 +34,7 @@ clear.bam.iterator <- function(bam.ptr){
 ## min.mq = minimum mapping quality
 ## min.ql = minimum query length (as reported in the bam_core field; this is not the
 ##          same as the actual query length.
-aligned.region <- function(region, range, bam.ptr, transpose=FALSE, merge=FALSE, flag.filter=c(-1,-1),
+aligned.region <- function(region, range, bam.ptr, transpose=TRUE, flag.filter=c(-1,-1),
                            opt.flag=0L, ref.seq="", min.mq=0, min.ql=0){
     tmp <- .Call("alignments_region", region, as.integer(range), bam.ptr, as.integer(flag.filter),
                  as.integer(opt.flag), ref.seq, as.integer(min.mq), as.integer(min.ql))

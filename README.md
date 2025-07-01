@@ -233,21 +233,21 @@ the bam handle (`load.bam()`).
    in addition to the primary alignment coordinates. The bits used are:
 
    ------------------------------------------------------------------------
-    bit   decimal hexadecimal   meaning
-   ----  -------- ------------  -------------------------------------------
-      1         1 0x1          Return query sequences as a character 
+    bit   decimal hex    interpretation
+   ----  -------- ------ --------------------------------------------
+      1         1  0x1        Return query sequences as a character 
                                vector named `query`
    
-      2         2         0x2  Return positions that differ from a
-                               reference sequence supplied by the ref.seq
-                               argument.
+      2         2  0x2   Return positions that differ from a
+                         reference sequence supplied by the ref.seq
+                         argument.
    
-      3         4         0x4  Calculate sequencing depth throughout the
-                               specified region.
+      3         4  0x4   Calculate sequencing depth throughout the
+                         specified region.
    
-      4         8         0x8  Construct cigar strings for alignments.
+      4         8  0x8   Construct cigar strings for alignments.
    
-      5        16        0x10  Return individual base qualities.
+      5        16  0x10  Return individual base qualities.
    ------------------------------------------------------------------------
    
 	The argument is constructed by a bitwise `OR` of the individual bits.
@@ -277,9 +277,9 @@ the bam handle (`load.bam()`).
    
    r.end     The reference end position
    
-   q.beg     The reference start position
+   q.beg     The query start position
    
-   q.end     The reference end position
+   q.end     The query end position
    
    mqual     The mapping quality
    
@@ -373,10 +373,6 @@ with(als, plot.window(xlim=range(al[,c("r.beg", "r.end")]),
                       ylim=c(0, max(al[,"q.end"]))))
 ## draw all alignments:
 with(als, segments(ops[,'r0'], ops[,'q0'], ops[,'r1'], ops[,'q1']))
-
-## add some axes...
-axis(1)
-axis(2)
 
 ```
 

@@ -345,6 +345,12 @@ the bam handle (`load.bam()`).
              `alt.nuc.q()` function.
 
    --------------------------------------------------------------------------------------------
+   
+   | column | Description |
+   | --- | -------------- |
+   | al.i | The index of the alignment for the current position. If `transpose` is `TRUE`, then this will correspond to the row number in the `al` matrix. |
+   | r.pos | The reference position (1 based). |
+	
 
 7. `depth`: NULL if `opt.flag` does not include 0x4. Otherwise an integer
    vector the same length as the region requested. Each entry in the vector

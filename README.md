@@ -10,30 +10,31 @@ data structures. This probably overlaps with functionality in `rbamtools` and
 all data is returned as core `R` data structures that can be used directly.
 
 The code relies on `htslib` which needs to be installed somewhere on the target
-system. Modify `Makevars` to include the path to the htslib headers, and make
-sure that the linker is configured to look for libraries (shared objects,
-`.so` files) where `htslib` can be found . If you have root access, you may
-need to modify `/etc/ld.so.conf.d` appropriately and run `ldconfig`. If not
-root, modifying `LD_LIBRARY_PATH` may also work. Note though that you should
-be familiar with the consequences of changing `LD_LIBRARY_PATH`.
+system. I suspect this makes it difficult to install on a Windows based system.
 
-I suspect getting this to work on a Windows machine is likely to be
-difficult. I don't suggest you try; instead install linux and live happily
-ever after (or miserably; I guess it depends).
 
-For documentation on how to use the functions, see further down in this file,
-the sources `read_bam.R`, and `src/read_bam.c`. For [very messy] examples, see
-the `tests/test.R` file.
+For documentation and example use of the functions provided, see
+further down in this file, or use the source (`read_bam.R`, and
+`src/read_bam.c`). For [very messy] examples, see the `tests/test.R`
+file.
 
-My motivation for writing this was to a large extent to have a *simple* code
-base with minimal dependancies that can reasonably efficiently convert bam
-data into data structures that allow visualisation and statistical analyses in
-`R`. `read_bam.c`, is currently around 2000 lines of code, which is a little
-more than I would like, but it is not *too* difficult to read. Unfortunately
-the amount of `C` code will probably grow. Simplicity to me, primarily means
-reducing the number of levels of abstraction used; this means that it is
-easier to work out what the code does.
+My motivation for writing this was to a large extent to have a
+*simple* code base with minimal dependancies that can reasonably
+efficiently convert bam data into data structures that allow
+visualisation and statistical analyses using core `R`
+functions. `read_bam.c`, is currently around 2000 lines of code, which
+is a little more than I would like, but it is not *too* difficult to
+read. Unfortunately the amount of `C` code will probably
+grow. 
 
+
+Simplicity in this case isn't so much the amount of code, but
+primarily a matter of reducing the number of levels of abstraction
+used. Reducing this means that it is easier to find the code that
+implements a particular function; and this in turn (to me anyway)
+makes it easier to modify the code to do different things when
+needed. I find this approach easier compared to either using or
+defining universally useful APIs.
 
 # Installation (compilation)
 
@@ -66,12 +67,13 @@ look at the `Makevars` file. On my system it contains the following:
 PKG_LIBS=-lhts
 ```
 
-The two first lines are commented out; these contain options that should be
-passed to `gcc` (the compiler) when compiling the source code (I should remove
-these at some point in the future). `CPPFLAGS` contain options related to the `C`
-pre-processor; here it specifies a directory that may contain header files; the
-second one states that the executable should be linked to the `libhts.so`
-library.
+The two first lines are commented out; these contain options that
+should be passed to `gcc` (the compiler) when compiling the source
+code (I should remove these at some point in the future since they
+should not be used in `Makevars` files). `CPPFLAGS` contain options
+related to the `C` pre-processor; here it specifies a directory that
+may contain header files; the second one states that the executable
+should be linked to the `libhts.so` library.
 
 If you have installed `libhts` to a non-standard directory, then you
 should probably include something like:
@@ -80,7 +82,8 @@ should probably include something like:
 PKG_CPPFLAGS='-I<libhts installation directory>'
 ```
 
-in the `Makevars` file.
+in the `Makevars` file. I haven't actually tried that, but something like
+that should work.
 
 Change to the `src` subdirectory and use `R CMD SHLIB` to create the library
 file:
@@ -93,11 +96,11 @@ R CMD SHLIB read_bam.c common.c
 ```
 
 This should produce three new files: `read_bam.o`, `common.o` and
-`read_bam.so`. The last of these three is the library file. This needs to
-be loaded in order to use the compiled functions. This is done using
-the `dyn.load`, which is called as the first line from the `read_bam.R` file.
-Hence you can simply source the `read_bam.R` file in order for the functions
-to be available (see usage).
+`read_bam.so`. The last of these three is the library file. This needs
+to be loaded in order to use the compiled functions. This is done
+using the `dyn.load`, which is called as the first line from the
+`read_bam.R` file.  Hence you can simply source the `read_bam.R` file
+in order for the functions to be available (see usage).
 
 # Usage
 
@@ -230,21 +233,21 @@ the bam handle (`load.bam()`).
    in addition to the primary alignment coordinates. The bits used are:
 
    ------------------------------------------------------------------------
-    bit   decimal    hexadecimal  meaning
-   ----  -------- --------------  -----------------------------------------
-      1         1            0x1  Return query sequences as a character 
-                                  vector named `query`
+    bit   decimal hexadecimal   meaning
+   ----  -------- ------------  -------------------------------------------
+      1         1 0x1          Return query sequences as a character 
+                               vector named `query`
    
-      2         2            0x2  Return positions that differ from a
-                                  reference sequence supplied by the ref.seq
-                                  argument.
+      2         2         0x2  Return positions that differ from a
+                               reference sequence supplied by the ref.seq
+                               argument.
    
-      3         4            0x4  Calculate sequencing depth throughout the
-                                  specified region.
+      3         4         0x4  Calculate sequencing depth throughout the
+                               specified region.
    
-      4         8            0x8  Construct cigar strings for alignments.
+      4         8         0x8  Construct cigar strings for alignments.
    
-      5        16           0x10  Return individual base qualities.
+      5        16        0x10  Return individual base qualities.
    ------------------------------------------------------------------------
    
 	The argument is constructed by a bitwise `OR` of the individual bits.
@@ -265,7 +268,7 @@ the bam handle (`load.bam()`).
 3. `al`: A numeric matrix. If `transpose` is `TRUE`, then it will have a
    fixed number of columns:
 
-   ----------------------------------------------------------------------------
+   --------------------------------------------------------------------------------
    column    meaning
    --------- ----------------------------------------------------------------------
    flag      The sam flag of the alignment
@@ -285,14 +288,14 @@ the bam handle (`load.bam()`).
    
    qclen     The query length inferred from the cigar data. This should be the
              same as qlen if the cigar data does not include any hard clip
-   	      operations.
+             operations.
    
-   ----------------------------------------------------------------------------
+   --------------------------------------------------------------------------------
 
 4. `ops`: The cigar data for all alignments encoded as a single integer
    matrix. If `transpose` is `TRUE` it will have the following columns:
 
-   --------------------------------------------------------------------------------
+   ---------------------------------------------------------------------------------
    column    meaning
    --------- -----------------------------------------------------------------------
    al.i      The index of the alignment for the current operation. If `transpose` is
@@ -315,7 +318,8 @@ the bam handle (`load.bam()`).
    q1        The query op end position plus one.
    
    op.l      The op length.
-   --------------------------------------------------------------------------------
+   
+   ---------------------------------------------------------------------------------
 
 5. `seq`: If `opt.flag` includes 0x1 then a character vector giving the query
    sequences as present in the bam file. Otherwise `NULL`.
@@ -324,12 +328,13 @@ the bam handle (`load.bam()`).
    giving the positions and bases in the reference and query of any
    mis-matched bases. The columns or rows of this matrix are:
    
-   --------------------------------------------------------------------------------
+   --------------------------------------------------------------------------------------------
    column    meaning
-   --------- -----------------------------------------------------------------------
+   --------- ----------------------------------------------------------------------------------
    al.i      The index of the alignment for the current position. If `transpose` is
    	         `TRUE`, then this will correspond to the row number in the `al`
    		     matrix.
+			 
    r.pos     The reference position (1 based).
 
    q.pos     The query position (1 based).
@@ -337,7 +342,8 @@ the bam handle (`load.bam()`).
    nuc       The reference and query bases and the query quality encoded in the lower 24 bits
              of a 32 bit integer. These can be extracted using the
              `alt.nuc.q()` function.
-   --------------------------------------------------------------------------------
+
+   --------------------------------------------------------------------------------------------
 
 7. `depth`: NULL if `opt.flag` does not include 0x4. Otherwise an integer
    vector the same length as the region requested. Each entry in the vector

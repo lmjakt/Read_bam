@@ -226,31 +226,22 @@ the bam handle (`load.bam()`).
    extracted. Should be given as a two element numeric vector.
 3. `transpose=TRUE`: If true, transpose matrix data structures to have a fixed
    number of columns and variable numbers of rows.
-4. `flag.filter=c(-1,-1)`: A numeric vector of two elements: required and banned
+v4. `flag.filter=c(-1,-1)`: A numeric vector of two elements: required and banned
    flags. These act on the sam flag field to include and exclude specific
    types of alignments. Users need to understand bitwise flags in order to
    specify these. The default value accepts alignments with any flag set.
 5. `opt.flag=0`: A bitwise flag specifying optional data that can be returned
    in addition to the primary alignment coordinates. The bits used are:
 
-   ------------------------------------------------------------------------
-    bit   decimal hex    interpretation
-   ----  -------- ------ --------------------------------------------
-      1         1  0x1        Return query sequences as a character 
-                               vector named `query`
-   
-      2         2  0x2   Return positions that differ from a
-                         reference sequence supplied by the ref.seq
-                         argument.
-   
-      3         4  0x4   Calculate sequencing depth throughout the
-                         specified region.
-   
-      4         8  0x8   Construct cigar strings for alignments.
-   
-      5        16  0x10  Return individual base qualities.
-   ------------------------------------------------------------------------
-   
+
+	| bit | decimal | hex | Description |
+	| --: | -----:  | --: | :---------- |
+	| 1 |  1 | 0x1 | Return query sequences as a character vector named `query` |
+    | 2 |  2 | 0x2 | Return positions that differ from a reference sequence supplied by the ref.seq argument. |
+    | 3 |  4 | 0x4 | Calculate sequencing depth throughout the specified region. |
+    | 4 |  8 | 0x8 | Construct cigar strings for alignments. |
+    | 5 | 16 | 0x10 | Return individual base qualities. |
+
 	The argument is constructed by a bitwise `OR` of the individual bits.
 6. `ref.seq=""`: The sequence of the region specified as the first
    argument. This sequence is required if the `opt.flag` includes 0x2. It
@@ -269,58 +260,33 @@ the bam handle (`load.bam()`).
 3. `al`: A numeric matrix. If `transpose` is `TRUE`, then it will have a
    fixed number of columns:
 
-   --------------------------------------------------------------------------------
-   column    meaning
-   --------- ----------------------------------------------------------------------
-   flag      The sam flag of the alignment
-   
-   r.beg     The reference start position
-   
-   r.end     The reference end position
-   
-   q.beg     The query start position
-   
-   q.end     The query end position
-   
-   mqual     The mapping quality
-   
-   qlen      The query length. Note that this is affected by hard clipping and
-             may not represent the read length.
-   
-   qclen     The query length inferred from the cigar data. This should be the
-             same as qlen if the cigar data does not include any hard clip
-             operations.
-   
-   --------------------------------------------------------------------------------
+   | Column | Description |
+   | --- | -------------- |
+   | flag | The sam flag of the alignment |
+   | r.beg | The reference start position |
+   | r.end | The reference end position |
+   | q.beg | The query start position |
+   | q.end | The query end position |
+   | mqual | The mapping quality |
+   | qlen  | The query length. Note that this is affected by hard clipping and may not represent the read length. |
+   | qclen | The query length inferred from the cigar data. This should be the same as qlen if the cigar data does not include any hard clip operations.|
+
 
 4. `ops`: The cigar data for all alignments encoded as a single integer
    matrix. If `transpose` is `TRUE` it will have the following columns:
 
-   ---------------------------------------------------------------------------------
-   column    meaning
-   --------- -----------------------------------------------------------------------
-   al.i      The index of the alignment for the current operation. If `transpose` is
-   	         `TRUE`, then this will correspond to the row number in the `al`
-   		     matrix.
-   
-   op        The cigar operation represented as an integer value with
-             "MIDNSHP=XB" mapping to the range 1-10.
-   
-   type      1, 2, or 3, depending on whether the operation consumes the query,
-             reference or both respectively.
-   
-   r0        The reference op start position (0 or 1 based?)
-   
-   q0        The query op start position (0 or 1 based?)
-   
-   r1        The reference op end position plus one (such that r1 - r0 gives the
-             length of the operation if the type is 2 or 3).
-   
-   q1        The query op end position plus one.
-   
-   op.l      The op length.
-   
-   ---------------------------------------------------------------------------------
+
+   | Column | Description |
+   | --- | -------------- |
+   | al.i | The index of the alignment for the current operation. If `transpose` is `TRUE`, then this will correspond to the row number in the `al` matrix.|
+   | op | The cigar operation represented as an integer value with "MIDNSHP=XB" mapping to the range 1-10.|
+   | type | 1, 2, or 3, depending on whether the operation consumes the query, reference or both respectively. |
+   | r0 | The reference op start position (1 based) |
+   | q0 | The query op start position (1 based) |
+   | r1 | The reference op end position plus one (such that r1 - r0 gives the length of the operation if the type is 2 or 3). |
+   | q1 | The query op end position plus one. |
+   | op.l | The op length |
+
 
 5. `seq`: If `opt.flag` includes 0x1 then a character vector giving the query
    sequences as present in the bam file. Otherwise `NULL`.
@@ -329,27 +295,12 @@ the bam handle (`load.bam()`).
    giving the positions and bases in the reference and query of any
    mis-matched bases. The columns or rows of this matrix are:
    
-   --------------------------------------------------------------------------------------------
-   column    meaning
-   --------- ----------------------------------------------------------------------------------
-   al.i      The index of the alignment for the current position. If `transpose` is
-   	         `TRUE`, then this will correspond to the row number in the `al`
-   		     matrix.
-			 
-   r.pos     The reference position (1 based).
-
-   q.pos     The query position (1 based).
-
-   nuc       The reference and query bases and the query quality encoded in the lower 24 bits
-             of a 32 bit integer. These can be extracted using the
-             `alt.nuc.q()` function.
-
-   --------------------------------------------------------------------------------------------
-   
-   | column | Description |
+   | Column | Description |
    | --- | -------------- |
    | al.i | The index of the alignment for the current position. If `transpose` is `TRUE`, then this will correspond to the row number in the `al` matrix. |
    | r.pos | The reference position (1 based). |
+   | q.pos | The query position (1 based). |
+   | nuc | The reference and query bases and the query quality encoded in the lower 24 bits of a 32 bit integer. These can be extracted using the alt.nuc.q()` function. |
 	
 
 7. `depth`: NULL if `opt.flag` does not include 0x4. Otherwise an integer

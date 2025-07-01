@@ -1,5 +1,6 @@
 ---
 title: read_bam
+geometry: "left=3cm,right=3cm"
 ---
 
 # Motivation
@@ -375,5 +376,8 @@ with(als, plot.window(xlim=range(al[,c("r.beg", "r.end")]),
 with(als, segments(ops[,'r0'], ops[,'q0'], ops[,'r1'], ops[,'q1']))
 
 ```
+
+!["A simple visualisation of alignments"](tests/al_plot_01.png "A simple visualisation of alignments")
+
 
 

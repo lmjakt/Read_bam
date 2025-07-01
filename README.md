@@ -224,13 +224,14 @@ the bam handle (`load.bam()`).
    vector).
 2. `range`: the beginning and end positions from which alignments should be
    extracted. Should be given as a two element numeric vector.
-3. `transpose=TRUE`: If true, transpose matrix data structures to have a fixed
+3. `bam.ptr`: an external pointer as returned by `load.bam()`.
+4. `transpose=TRUE`: If true, transpose matrix data structures to have a fixed
    number of columns and variable numbers of rows.
-v4. `flag.filter=c(-1,-1)`: A numeric vector of two elements: required and banned
+5. `flag.filter=c(-1,-1)`: A numeric vector of two elements: required and banned
    flags. These act on the sam flag field to include and exclude specific
    types of alignments. Users need to understand bitwise flags in order to
    specify these. The default value accepts alignments with any flag set.
-5. `opt.flag=0`: A bitwise flag specifying optional data that can be returned
+6. `opt.flag=0`: A bitwise flag specifying optional data that can be returned
    in addition to the primary alignment coordinates. The bits used are:
 
 
@@ -243,11 +244,11 @@ v4. `flag.filter=c(-1,-1)`: A numeric vector of two elements: required and banne
     | 5 | 16 | 0x10 | Return individual base qualities. |
 
 	The argument is constructed by a bitwise `OR` of the individual bits.
-6. `ref.seq=""`: The sequence of the region specified as the first
+7. `ref.seq=""`: The sequence of the region specified as the first
    argument. This sequence is required if the `opt.flag` includes 0x2. It
    should be given as a single element character vector.
-7. `min.mq=0`: The minimum mapping quality.
-8. `min.ql=0`: The minimum query length.
+8. `min.mq=0`: The minimum mapping quality.
+9. `min.ql=0`: The minimum query length.
 
 ### Value:
 
@@ -336,5 +337,93 @@ with(als, segments(ops[,'r0'], ops[,'q0'], ops[,'r1'], ops[,'q1']))
 
 !["A simple visualisation of alignments"](tests/al_plot_01.png "A simple visualisation of alignments")
 
+The `ops` and `diff` matrices can also be used to identify potential variants. To
+find locations that have an excess of indels one can simply use the `R` `tapply()`
+and `table()` functions:
 
+```R
+indel.pos <- with(als, tapply(ops[,'r0'], ops[,'op'], table))
+```
 
+Similarly to find locations mismatch excesses (possibly indicating heterozygosity
+position) one can:
+
+```R
+mm.pos <- table(als$diff[,'r.pos'])
+```
+
+And again, this can be combined with table to ask what types of mismatches are
+more common:
+
+```R
+mm.n.pos <- with(als, tapply(diff[,'r.pos'], bitwAnd(0xFFFF, diff[,'nuc']), table))
+```
+
+Here `bitwAnd` of the `nuc` column and `0xFFFF` is used to extract the lowest 16 bits 
+of the `nuc` column as these hold the reference and query bases (or residues generally).
+You can then use core `R` functions to evaluate the evidence for heterozygosity at individual
+sites or to identify mutation trends.
+
+## `sam.read.n`
+
+Returns information about a specified number (`n`) of alignments from the
+current read position of a bam handle. This differs from `aligned.region()` in
+that it can be used with unsorted and un-indexed bam files. However, as a
+consequence the function cannot return the depth of a region since alignments
+can come from random locations across the genome. `sam.read.n()` also does not
+support the identification of base mismatches; this is because to do so, the
+user would need to load the entire reference genome into the current `R`
+session.
+
+It's interface differs in that the user can select any combination of bam
+information fields to return using a bitwise flag as before. `sam.read.n()`
+also supports the parsing of base modification data from auxiliary strings.
+
+### Arguments
+
+1. `bam.ptr`: an external pointer as returned by `load.bam()`.
+2. `n`: the number of alignments for which information should be returned.
+3. `ret.f`: A flag value that determines what fields are extracted from the
+   bam file. It is formed by bitwise `OR` of the following bits:
+
+	| bit | decimal | hex | Description |
+	| --: | -----:  | --: | :---------- |
+	| 1 |  1 | 0x1 | query id |
+    | 2 |  2 | 0x2 | sam flag value |
+    | 3 |  4 | 0x4 | reference name |
+    | 4 |  8 | 0x8 | reference position |
+    | 5 | 16 | 0x10 | mapping quality |
+	| 6 | 32 | 0x20 | cigar string |
+	| 7 | 64 | 0x40 | reference name for next mate |
+	| 8 | 128 | 0x80 | position for next mate |
+	| 9 | 256 | 0x100 | template length (can be negative) |
+	| 10 | 512 | 0x200 | query sequence as given in sam / bam (may be clipped and reverse complemented) |
+	| 11 | 1024 | 0x400 | query base qualites |
+	| 12 | 2048 | 0x800 | the auxiliary string |
+	| 13 | 4096 | 0x1000 | cigar operations as a matrix; this will be set if bit 15 is set. |
+	| 14 | 8192 | 0x2000 | *not used* |
+	| 15 | 16384 | 0x4000 | parse base modification (MM) data |
+	
+	`ret.f` defaults to (2^6 - 1 + 0x200 + 0x400 + 0x800); i.e. query id, flag, reference name
+	position, mapping quality, query sequence, query qualities and the auxiliary field.
+4. `sel.flags`: A vector of three integers (required flags, banned flags and minimium mapping quality).
+5. `resize`: a logical value (`TRUE` or `FALSE`) that determines whether the data should be resized
+	if fewer than `n` alignments were returned. Defaults to `FALSE`.
+6. `transpose`: whether matrix structures returned should be transposed such that they have
+   variable numbers of row and fixed numbers of columns (as for `aligned.region()`). Defaults
+   to `TRUE`.
+
+### Value:
+
+`sam.read.n` returns a named list with 16 members corresponding to the 15 bits of the flag
+values used in `ret.f`. The 14^th^ element returns a matrix containing information about
+the query sequence; this is non-null if the cigar string should be parsed to a matrix. The last
+element is a single integer giving the number of alignments returned. This can differ from the
+lengths of the individual elements in cases where 
+All entries in the returned list whose corresponding bits specified in `ret.f` were 0
+will be `NULL`. The elements of the list are:
+
+| name | description |
+| :--- | :---------- |
+|  id  | Query id (character vector) |
+| flag |  ref   pos  mapq cigar ref.m pos.m  tlen   seq  qual   aux   ops

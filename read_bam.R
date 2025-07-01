@@ -79,8 +79,8 @@ aligned.region <- function(region, range, bam.ptr, transpose=TRUE, flag.filter=c
 ## 1. f: only include reads with all flags set
 ## 2. F: exclude all reads with any flag set
 ## 3. min_mapq 
-sam.read.n <- function(bam.ptr, n, ret.f=( 0x1 + 0x200 + 0x400 + 0x800),
-                       sel.flags=c(0, 0, 0), resize=FALSE, transpose=FALSE){
+sam.read.n <- function(bam.ptr, n, ret.f=(2^6 - 1 + 0x200 + 0x400 + 0x800),
+                       sel.flags=c(0, 0, 0), resize=FALSE, transpose=TRUE){
     tmp <- .Call("sam_read_n", bam.ptr, as.integer(n),
                  as.integer(ret.f), as.integer(sel.flags))
     if(resize){

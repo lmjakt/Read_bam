@@ -1139,6 +1139,75 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   return(ret_data);
 }
 
+SEXP count_region_alignments(SEXP region_r, SEXP region_range_r,
+			     SEXP bam_ptr_r, SEXP flag_filter_r, 
+			     SEXP min_mq_r){
+  if(TYPEOF(region_r) != STRSXP || length(region_r) < 1)
+    error("region_r should be a character vector of positive length");
+  struct bam_ptrs *bam = extract_bam_ptr(bam_ptr_r);
+  if(!bam){
+    // we could be clever here and try to recreate from the protect information
+    // but we should think carefully about this
+    error("External pointer is NULL");
+  }
+  if(!bam->index){
+    error("External pointer does not contain an index structure");
+  }
+  if(TYPEOF(region_range_r) != INTSXP || length(region_range_r) != 2)
+    error("region_range should be an integer vector of length 2");
+  int *region_range = INTEGER(region_range_r);
+  if(region_range[1] < region_range[0] || region_range[0] < 0)
+    error("Unsorted region_range");
+  const char *region = CHAR(STRING_ELT(region_r, 0));
+  int target_id = sam_hdr_name2tid(bam->header, region);
+  if(target_id < 0){
+    warning("Unable to find target id for specified region: %s", region);
+    return(R_NilValue);
+  }
+  if(TYPEOF(min_mq_r) != INTSXP || length(min_mq_r) != 1)
+    error("min_mq_r should be an integer vector of length 1");
+  /* if(TYPEOF(min_ql_r) != INTSXP || length(min_ql_r) != 1) */
+  /*   error("min_ql_r should be an integer vector of length 1"); */
+  int min_mq = asInteger(min_mq_r);
+  //  int min_ql = asInteger(min_ql_r);
+
+  if(TYPEOF(flag_filter_r) != INTSXP || length(flag_filter_r) != 2)
+    error("flag_filter should be an integer vector of length 2");
+  int *flag_filter_rp = INTEGER(flag_filter_r);
+  // default values; no filtering
+  uint32_t flag_filter[2] = {0, 0};
+  // override if set by user.
+  if(flag_filter_rp[0] >= 0)
+    flag_filter[0] = (uint32_t)flag_filter_rp[0];
+  if(flag_filter_rp[1] >= 0)
+    flag_filter[1] = (uint32_t)flag_filter_rp[1];
+
+  // We use sam_itr_queryi, so that we can specify the region
+  // numerically thus also allowing the same function to return the sequence depth for the region.
+  hts_itr_t *b_itr = sam_itr_queryi(bam->index, target_id, region_range[0], region_range[1]);
+  bam1_t *al = bam_init1();
+  int r=0;
+  int n=0; // the number of alignments
+  while((r=sam_itr_next(bam->sam, b_itr, al)) >= 0){
+    uint32_t flag = (uint32_t)al->core.flag;
+    // any bits set in flag_filter[0] must also be set in flag
+    if((flag & flag_filter[0]) != flag_filter[0])
+      continue;
+    // any bits set in flag_filter[1] must be 0 in flag
+    if((flag & flag_filter[1]) > 0)
+      continue;
+    if(al->core.qual < min_mq)
+      continue;
+    ++n;
+  }
+  // It might be good to call hts_itr_destroy here to avoid a memory leak:
+  // hts_itr_destroy( b_itr );
+  SEXP ret_value = PROTECT(allocVector(INTSXP, 1));
+  *(INTEGER(ret_value)) = n;
+  UNPROTECT(1);
+  return( ret_value );
+}
+
 // Reads from an unindexed sam / bam / cram file
 // bam_ptr_r : an external pointer to a bam_ptr struct
 // n_r       : the number of reads to read (a single integer)
@@ -2105,6 +2174,7 @@ static const R_CallMethodDef callMethods[] = {
   {"set_iterator", (DL_FUNC)&set_iterator, 3},
   {"clear_iterator", (DL_FUNC)&clear_iterator, 1},
   {"alignments_region", (DL_FUNC)&alignments_region, 8},
+  {"count_region_alignments", (DL_FUNC)&count_region_alignments, 5},
   {"sam_read_n", (DL_FUNC)&sam_read_n, 4},
   {"sam_flag_stats", (DL_FUNC)&sam_flag_stats, 2},
   {"target_lengths", (DL_FUNC)&target_lengths, 1},

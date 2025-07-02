@@ -20,6 +20,14 @@ set.bam.iterator <- function(bam.ptr, region, range=NULL){
     .Call("set_iterator", bam.ptr, region, as.integer(range));
 }
 
+## This only frees the memory of the iterator and does
+## not cause the reading to start from the beginning.
+## To start reading from the beginning of a file we
+## can set.bam.iterator using a set of special values
+## (see sam.h sam_itr_queryi):
+## HTS_IDX_NOCOOR, HTS_IDX_START, HTS_IDX_REST, HTS_IDX_NONE
+## for the region part. This needs to be implemented in the read_bam.c.
+## This is just a reminder about how to implement this.
 clear.bam.iterator <- function(bam.ptr){
     .Call("clear_iterator", bam.ptr)
 }
@@ -48,6 +56,13 @@ aligned.region <- function(region, range, bam.ptr, transpose=TRUE, flag.filter=c
     ## we could consider to merge query and al, into a data.frame
     ## but there is not that much point
     tmp
+}
+
+count.alignments <- function(region, range, bam.ptr, flag.filter=c(-1,-1), min.mq=0){
+    .Call("count_region_alignments",
+          region, as.integer(range), bam.ptr,
+          as.integer(flag.filter),
+          as.integer(min.mq))
 }
 
 ## there are 11 mandatory fields in the bam file; This function was initially

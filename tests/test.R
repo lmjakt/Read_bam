@@ -47,6 +47,11 @@ system.time(
 ##  user  system elapsed 
 ## 0.025   0.000   0.025
 
+## check if we get the same number of alignments using the count.alignments function
+
+n <- count.alignments( region, c(0, tl[region]), bam.ptr ) ## seems to work!
+
+
 ## check the dimensions and lengths of the members:
 sapply( bam.reg, function(x){ ifelse(is.null(dim(x)), length(x), nrow(x)) })
 ##   ref  query     al    ops    seq   diff  depth  cigar   qual 

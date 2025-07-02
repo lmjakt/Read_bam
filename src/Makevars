@@ -1,3 +1,28 @@
+## In order to compile read_bam, the command to gcc needs to include the
+## following two options:
 ## CPPFLAGS=-I/usr/local/include
+##    This tells the preprocessor to look for header files in
+##    /usr/local/include
+##    This is where I have installed htslib, but if you have
+##    in in a different location, then you will need to tell R
+##    about it.
+##    R seems to include /usr/local/include by default, so I don't
+##    need to do anything about it.
+##
 ## CFLAGS=-lhts
+##    This tells gcc (the compiler) that the executable should be linked
+##    against the libhts library. This is a non-standard requirement and
+##    to make sure that the R includes it we need the following line.
 PKG_LIBS=-lhts
+
+## The linking to libhts is done when dyn.load() is run from R. For it
+## to work, the system linker needs to be able to find it. For most programs
+## the shared object files (i.e. libraries / modules / ... ) are placed
+## in a set of standard directories. If you can't place libhts in one of
+## these, then you can either:
+## 1. Set the value of $LD_LIBRARY_PATH
+## 2. Tell gcc where to look for the .so file by passing the r-path-link
+##    option (see man ld)
+##
+## I haven't tried either of these options, so I'm not entirely sure of the
+## correct way of doing it. I will check that out in the future.

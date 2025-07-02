@@ -1,5 +1,7 @@
 source('../read_bam.R')
 
+## This is an inefficient way to read fasta files
+## But it is simple ;-)
 read.fasta <- function(fn){
     lines <- readLines(fn)
     id.i <- grep("^>", lines)
@@ -11,16 +13,32 @@ read.fasta <- function(fn){
     names(seq) <- sub("^>([^ ]+).+", "\\1", lines[id.i])
     seq
 }
+
+
 ref.seq <- read.fasta("KI270733.fasta")
 
+## the name of the bam file:
+## and a region for which we have just read in
+## some sequence, and an arbitrary region of a 1000 bp
+
 bam.f <- "test_srt.bam"
-bam.i <- "test_srt.bam.bai"
 region <- "KI270733.1"
 range <- c(130000, 131000)
 
-bam.ptr <- load.bam(bam.f, bam.i)
+## create an external pointer
+## and obtain the lengths of reference regions
+bam.ptr <- load.bam(bam.f)
 tl <- target.lengths(bam.ptr)
 
+## check the length of the region:
+tl[region]
+## 179772
+
+## obtain alignments. Since we have the reference region we can ask for query
+## nucleotides that differ from the reference.
+## We define the region as the complete sequence, using the tl vector
+## We set the opt.flag to (2^5-1) in order to set all bits to 1, since;
+## (2^5-1) = (1 + 2 + 4 + 8 + 16)
 system.time(
     bam.reg <- aligned.region(region, c(0, tl[region]), bam.ptr,
                               opt.flag=2^5-1, transpose=TRUE, ref.seq=ref.seq)
@@ -29,13 +47,80 @@ system.time(
 ##  user  system elapsed 
 ## 0.025   0.000   0.025
 
-## for:
-nrow(bam.reg$diff)
-## [1] 6594
-nrow(bam.reg$al)
-## [1] 6494
-nrow(bam.reg$ops)
-## [1] 15935
+## check the dimensions and lengths of the members:
+sapply( bam.reg, function(x){ ifelse(is.null(dim(x)), length(x), nrow(x)) })
+##   ref  query     al    ops    seq   diff  depth  cigar   qual 
+##     1   6494   6494  15935   6494   6594 179773   6494   6494 
+
+## plot the sequencing depth:
+## and alignments seperately
+par(mfrow=c(2,1))
+plot(bam.reg$depth, type='l', xlab='position', ylab='depth', main=region)
+
+## that looks like RNA sequencing data;
+
+## plot all alignments:
+## define colours for the different cigar operations:
+## (MIDNSHP=XB => 1:10)
+cig.hsv <- data.frame(h=c(0, 0, 0.33, 0.66, 0.8, 0.8, rep(0,4)),
+                      s=c(rep(1, 4), 0.5, 0.5, rep(0, 4)),
+                      v=c(0, rep(0.8, 9)),
+                      a=c(rep(0.25, 3), 1, rep(0.25, 6)))
+                  
+plot.new()
+plot.window(xlim=c(0, tl[region]), ylim=range(bam.reg$ops[,c('q0','q1')]))
+ops <- bam.reg$ops[,'op']
+cols <- with(cig.hsv, hsv(h[ops], s[ops], v[ops], a[ops]))
+with(bam.reg, segments( ops[,'r0'], ops[,'q0'], ops[,'r1'], ops[,'q1'],
+                       col=cols))
+axis(1); axis(2)
+
+## restrict plot to smaller region;
+xlim=c(0,2000) + 130000
+## we can show the positions and counts of all differences
+## to make this quicker, show only those that are visible in the current
+## region:
+b <- with(bam.reg, diff[,'r.pos'] >= xlim[1] & diff[,'r.pos'] <= xlim[2])
+sum(b)
+## [1] 1251
+## use table to count depths;
+diff.d <- table(bam.reg$diff[b,'r.pos'])
+
+
+par(mfrow=c(2,1))
+plot(bam.reg$depth, xlim=xlim, type='l', xlab='position', ylab='depth', main=region)
+## show numbers of errors:
+x <- as.numeric(names(diff.d))
+segments(x, 0, x, diff.d)
+## 
+plot.new()
+plot.window(xlim=xlim, ylim=c(-1,1) * max(bam.reg$ops[,'q1']))
+strand <- 1 - with(bam.reg, bitwAnd( 16, al[ops[,'al.i'], 'flag'] ) ) / 8
+diff.strand <- 1 - with(bam.reg, bitwAnd( 16, al[diff[,'al.i'], 'flag'] ) ) / 8
+with(bam.reg, segments( ops[,'r0'], ops[,'q0'] * strand, ops[,'r1'], ops[,'q1'] * strand, col=cols, lwd=2 ))
+axis(1); axis(2)
+with(bam.reg, points(diff[b,'r.pos'], diff[b,'q.pos'] * diff.strand[b], cex=0.5, pch=19, col='red'))
+
+### The example in the README.md
+als <- aligned.region(region, xlim, bam.ptr,
+                      opt.flag=2^5-1, transpose=TRUE, ref.seq=ref.seq)
+
+png("al_plot_01.png", width=2000, height=300)
+plot.new()
+with(als, plot.window(xlim=range(al[,c("r.beg", "r.end")]),
+                      ylim=c(0, max(al[,"q.end"])), asp=1))
+## draw all alignments:
+with(als, segments(ops[,'r0'], ops[,'q0'], ops[,'r1'], ops[,'q1'], col=hsv(0,0,0,0.25)))
+axis(1); axis(2)
+dev.off()
+
+
+## get alignment using sam.read.n
+clear.bam.iterator(bam.ptr)
+als.n <- sam.read.n(bam.ptr, 1000, ret.f=2^15-1)
+
+clear.bam.iterator(bam.ptr)
+als.n2 <- sam.read.n(bam.ptr, 1000, ret.f=2^15-1)
 
 bam.reg <- aligned.region(region, range, bam.ptr, opt.flag=1L, transpose=TRUE)
 tmp1 <- aligned.region(region, range, bam.ptr, opt.flag=3L)

@@ -7,6 +7,9 @@
 // as provided to R from functions here.
 // They differ from the original bam encoding by counting from 0.
 // it's BAM encoding + 1
+// We probably don't need these; we should instead use the
+// BAM_CMATCH, BAM_CINS, BAM_CDEL, BAM_CREF_SKIP, BAM_CSOFT_CLIP, BAM_CHARD_CLIP
+// BAM_CPAD, BAM_CEQUAL, BAM_CDIFF, BAM_CBACK that are defined in sam.h
 #define CIG_M 1
 #define CIG_I 2
 #define CIG_D 3

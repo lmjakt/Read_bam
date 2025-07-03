@@ -157,7 +157,9 @@ static void finalise_bcf_ptrs(SEXP ptr_r){
 
 // Convenience function that makes a char sequence out of
 // the sequence in bam1_t.data
-
+// It would be better for this to take a reference to a buffer
+// that can be reallocated if needed. As it is we keep calling
+// malloc and free which is rather inefficient.
 char *bam_seq(bam1_t *bam){
   uint8_t *seq_data = bam_get_seq(bam);
   // the sequence may not be stored in the bam file. In this case
@@ -327,7 +329,7 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   if(is_fwd){
     while( *col_i < end ){
       int *coords = ops->data + (*col_i) * ops->nrow;
-      if( coords[q0] <= q_pos && coords[q1] >= q_pos ){
+      if( coords[q0] <= q_pos && coords[q1] > q_pos ){
 	// if the op type is M, (i.e. 0) we have a match.
 	// otherwise we don't have a match.
 	if( coords[op] == 0 ){
@@ -350,7 +352,7 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   }
   while( *col_i >= beg ){
     int *coords = ops->data + (*col_i) * ops->nrow;
-    if( coords[q0] <= q_pos && coords[q1] >= q_pos ){
+    if( coords[q0] < q_pos && coords[q1] >= q_pos ){
       // if the op type is M, (i.e. 0) we have a match.
       // otherwise we don't have a match.
       if( coords[op] == 0 ){

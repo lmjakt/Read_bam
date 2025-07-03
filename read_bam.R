@@ -42,7 +42,7 @@ clear.bam.iterator <- function(bam.ptr){
 ## min.mq = minimum mapping quality
 ## min.ql = minimum query length (as reported in the bam_core field; this is not the
 ##          same as the actual query length.
-aligned.region <- function(region, range, bam.ptr, transpose=TRUE, flag.filter=c(-1,-1),
+aligned.region <- function(region, range, bam.ptr, transpose=TRUE, flag.filter=c(0,0),
                            opt.flag=0L, ref.seq="", min.mq=0, min.ql=0){
     tmp <- .Call("alignments_region", region, as.integer(range), bam.ptr, as.integer(flag.filter),
                  as.integer(opt.flag), ref.seq, as.integer(min.mq), as.integer(min.ql))
@@ -170,7 +170,9 @@ alt.nuc.q <- function(alt){
     r <- intToUtf8( bitwAnd( bitwShiftR( alt, 8 ), 0x000000FF ) )
     q <- intToUtf8( bitwAnd( alt, 0x000000FF ) );
     qual <- bitwAnd( bitwShiftR( alt, 16 ), 0x000000FF )
-    data.frame( ref=r, query=q, qual=qual )
+    rq <- matrix(sapply( strsplit(c(r, q), ""), eval), ncol=2)
+    colnames(rq) <- c('r', 'q')
+    data.frame( rq, qual=qual )
 }
 
 ## extract query insertions from the ops table

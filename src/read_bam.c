@@ -501,14 +501,14 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
     // obtain the refeference position.
     qpos = query_to_ref( seq_i, &r_pos, cig_ops, ops_beg, ops_end, &current_op, is_fwd, seql );
     nuc_info = 0;
-    char fwd_base = is_fwd ? nuc_encoding[ bam_seqi(seq_data, qpos-1) ] : nuc_encoding_rc[ bam_seqi(seq_data, qpos-1) ];
+    char fwd_base = nuc_encoding[ bam_seqi(seq_data, qpos-1) ];
     if(qpos > 0){
       nuc_info |= (((uint32_t)base) << 24);
       if(seq_qual && qpos <= seql)
 	nuc_info |= (((uint32_t)seq_qual[ qpos - 1 ]) << 16);
       if(ref_seq && r_pos <= ref_seq_l){
 	nuc_info |= (((uint32_t)ref_seq[ r_pos - 1 ]) << 8);
-	nuc_info |= (ref_seq[r_pos-1] != fwd_base);
+	nuc_info |= (ref_seq[r_pos-1] == fwd_base);
       }
     }
     push_column( mod_data, (int[]){al_i, (int)qpos, (int)mod_code, mod_n, 0, r_pos, nuc_info} );

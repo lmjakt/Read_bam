@@ -310,7 +310,7 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   // to 1 - based counting at some point in the future. But for now
   // changing all of those is a bit much. Instead here we change
   // the q_pos to a 0 based system.
-  q_pos--;
+  //  q_pos--;
   // REMOVE THE ABOVE LINE IF ops table changes to a 1 based system.
   // regression possibility!!
   // default mapping:
@@ -333,7 +333,7 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 	// if the op type is M, (i.e. 0) we have a match.
 	// otherwise we don't have a match.
 	if( coords[op] == 0 ){
-	  *r_pos = 1 + coords[r0] + (q_pos - coords[q0]);
+	  *r_pos = coords[r0] + (q_pos - coords[q0]);
 	  return(1);
 	}
 	return(0);
@@ -345,18 +345,18 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   // otherwise we are mapping in the reverse direction.
   // We note that we might be able merge the two parts here, as the only difference is
   // the loop condition and the direction of change. But lets try separately first.
-  q_pos = q_len - q_pos;
+  q_pos = 1 + q_len - q_pos;
   if(q_pos < 0){
     warning("Obtained a negative query position: %d for q_len %d", q_pos, q_len);
     return(0);
   }
   while( *col_i >= beg ){
     int *coords = ops->data + (*col_i) * ops->nrow;
-    if( coords[q0] < q_pos && coords[q1] >= q_pos ){
+    if( coords[q0] <= q_pos && coords[q1] > q_pos ){
       // if the op type is M, (i.e. 0) we have a match.
       // otherwise we don't have a match.
       if( coords[op] == 0 ){
-	// do not add 1 here !
+	// do not add 1 here as it's already added to q_pos above.
 	*r_pos = coords[r0] + (q_pos - coords[q0]);
 	return(1);
       }
@@ -584,14 +584,16 @@ void cigar_to_table(bam1_t *al, int al_i, struct i_matrix *al_coord,
   column[0] = al_i;
   uint32_t *cigar = bam_get_cigar(al);
   int32_t cigar_l = al->core.n_cigar;
-  int r_pos = (int)al->core.pos;
-  int q_pos = 0;
+  // use a 1-based coordinate system instead of a 0-based one
+  // for consistency with R and aligned_regions(_
+  int r_pos = 1 + (int)al->core.pos;
+  int q_pos = 1;
   *qcig_length = 0;
   *q_beg = 1;
   *q_end = 0;
   // if we have hard clipping set q_beg appropriately:
   // we should define MACROs to replace the numbers here.
-  if(cigar_l && bam_cigar_op(cigar[0]) == 5)
+  if(cigar_l && bam_cigar_op(cigar[0]) == BAM_CHARD_CLIP)
     *q_beg = bam_cigar_oplen(cigar[0]);
 
   *ops_beg = al_coord->col;
@@ -600,7 +602,7 @@ void cigar_to_table(bam1_t *al, int al_i, struct i_matrix *al_coord,
     int type = bam_cigar_type(cigar[i]);
     int op = bam_cigar_op(cigar[i]);
     int op_length = bam_cigar_oplen( cigar[i] );
-    if( type & 1 || op == 5 )
+    if( type & 1 || op == BAM_CHARD_CLIP )
       *qcig_length += op_length;
     column[1] = op;
     column[2] = type;
@@ -955,7 +957,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   struct i_matrix var_coord = init_i_matrix( 4, init_size );
   SEXP var_coord_row_names_r = PROTECT(mk_rownames( (const char*[]){"al.i", "r.pos", "q.pos", "nuc"}, 4 ));
 
-  int column[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  //  int column[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   // dimNames_r used to set rownames for the main return table
   SEXP dimNames_r = PROTECT(mk_rownames( rownames, 8 ));
   // We also want to return more basic information about the alignments eg.
@@ -1013,7 +1015,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 	str_array_push_cp(&query_qual, "*");
     }
     al_count++;
-    column[0] = al_count;
+    //    column[0] = al_count;
     // then go through the cigar string and for each op create a new column
     // of offsets for the al_count
     uint32_t *cigar = bam_get_cigar(al);
@@ -1036,21 +1038,28 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     int qcig_length = 0;
     for(int i=0; i < cigar_l; ++i){
       // if operation is H also increment the qcig_length
-      if( bam_cigar_type(cigar[i]) & 1 || bam_cigar_op( cigar[i] ) == 5 )
+      if( bam_cigar_type(cigar[i]) & 1 || bam_cigar_op( cigar[i] ) == BAM_CHARD_CLIP )
 	qcig_length += bam_cigar_oplen( cigar[i] );
-      column[1] = bam_cigar_op( cigar[i] ) + 1;
-      column[2] = bam_cigar_type(cigar[i]);
-      column[3] = r_pos;
-      column[4] = q_pos;
-      if( q_beg == -1 && (bam_cigar_type(cigar[i]) & 2) )
+      int cig_op = bam_cigar_op(cigar[i]);
+      int cig_type = bam_cigar_type(cigar[i]);
+      int cig_oplen = bam_cigar_oplen(cigar[i]);
+      int ref_0 = r_pos;
+      int ref_1 = r_pos + (cig_type & CIG_OP_TP_RC ? cig_oplen : 0);
+      int q_0 = q_pos;
+      int q_1 = q_pos +  (cig_type & CIG_OP_TP_QC ? cig_oplen : 0);
+      /* column[1] = bam_cigar_op( cigar[i] ); //  + 1; // removed for consistency with cigar_to_table() */
+      /* column[2] = bam_cigar_type(cigar[i]); */
+      /* column[3] = r_pos; */
+      /* column[4] = q_pos; */
+      if( q_beg == -1 && (cig_type & CIG_OP_TP_RC) )
 	q_beg = q_pos;
       // If the caller has requested the variance information and the
       // cigar op consumes both the query and the reference
       // then check for differences in the sequence
-      if( (opt_flag & (AR_Q_DIFF | AR_Q_DEPTH)) &&  bam_cigar_type(cigar[i]) == 3){
+      if( (opt_flag & (AR_Q_DIFF | AR_Q_DEPTH)) &&  cig_type == 3){
 	// I added +1 to r_pos and q_pos above; this means that I
 	// need to subtract 1 from all of j here.
-	for(int j=0; j < bam_cigar_oplen(cigar[i]); ++j){
+	for(int j=0; j < cig_oplen; ++j){
 	  // Note that qseq may not be stored.
 	  if(qseq && (opt_flag & AR_Q_DIFF) && (j + r_pos) < ref_seq_l ){
 	    if(qseq[ q_pos + j - 1] != ref_seq[ r_pos + j -1 ]){
@@ -1073,14 +1082,15 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       // reference position
       // WRONG; this is not needed because the next operation will be a match
       // op starting at the same position. This means that we will overcount the depth.
-      q_pos += bam_cigar_type(cigar[i]) & 1 ? bam_cigar_oplen( cigar[i] ) : 0;
-      r_pos += bam_cigar_type(cigar[i]) & 2 ? bam_cigar_oplen( cigar[i] ) : 0;
+      q_pos += bam_cigar_type(cigar[i]) & CIG_OP_TP_QC ? bam_cigar_oplen( cigar[i] ) : 0;
+      r_pos += bam_cigar_type(cigar[i]) & CIG_OP_TP_RC ? bam_cigar_oplen( cigar[i] ) : 0;
       if(bam_cigar_type(cigar[i]) & 2)
 	q_end = q_pos;
-      column[5] = r_pos;
-      column[6] = q_pos;
-      column[7] = bam_cigar_oplen( cigar[i] );
-      push_column( &al_coord, column );
+      /* column[5] = r_pos; */
+      /* column[6] = q_pos; */
+      /* column[7] = bam_cigar_oplen( cigar[i] ); */
+      push_column( &al_coord, (int[]){al_count, cig_op, cig_type, ref_0, q_0, ref_1, q_1, cig_oplen} );
+      //      push_column( &al_coord, column );
     }
     av_column[2] = r_pos;
     av_column[3] = q_beg;

@@ -20,6 +20,14 @@
 #define CIG_EQ 8
 #define CIG_X 9
 
+// cigar operation type defines whether the query, reference
+// or both are consumed (1,2,3). 
+// sam.h does not define any constants to help us remember which is 1 or 2
+// Here, _TP_QC => type consumes query
+//       _TP_RC => type consumes reference
+#define CIG_OP_TP_QC 1
+#define CIG_OP_TP_RC 2
+
 // The following define the number of rows  and their names in tables returned by
 // aligned_region and sam_read_n
 // The number of rows in an cigar operations table

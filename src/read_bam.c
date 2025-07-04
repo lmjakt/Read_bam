@@ -33,8 +33,9 @@
 #define AR_Q_DIFF 2 // return positions an identities where query != ref
 #define AR_Q_DEPTH 4 // return sequencing depth
 #define AR_CIG 8     // construct and return a cigar string
-#define AR_Q_QUAL 16 // return query qualities (ascii encoded; not phred)
-
+#define AR_Q_QUAL 16 // return query qualities (ascii encoded; i.e. phred + 0)
+#define AR_MT_INFO 32 // return information about mate including tlen (not implemented)
+#define AR_AUX_MM 64 // parse MM info; implies if AR_Q_QUAL, and (AR_Q_SEQ if reference sequence defined).
 
 
 // and a vector of return types:
@@ -288,7 +289,7 @@ uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_i
 
 // translate query to reference positions. Requires an i_matrix of
 // query operations; 
-// Returns 1 on alignment, 0 on no alignment
+// Returns transformed query position (1 based) on alignment, -1 on no alignment
 // to the one used that contains the query position.
 // q_pos: the query position. This is assumed to be 1-based because of
 //        the behaviour of parse_MM_string
@@ -316,7 +317,7 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   // default mapping:
   *r_pos = -1;
   if(beg == end || *col_i == end || *col_i < beg)
-    return(0);
+    return(-1);
   // the row offsets of the ops table; We might want to check
   // the structure, but this should be considered a priviledged
   // call.
@@ -325,7 +326,6 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   int q0 = 4;
   //  int r1 = 5;
   int q1 = 6;
-  // for forward read; this is the only thing that is supported.
   if(is_fwd){
     while( *col_i < end ){
       int *coords = ops->data + (*col_i) * ops->nrow;
@@ -334,13 +334,13 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 	// otherwise we don't have a match.
 	if( coords[op] == 0 ){
 	  *r_pos = coords[r0] + (q_pos - coords[q0]);
-	  return(1);
+	  return(q_pos);
 	}
-	return(0);
+	return(-1);
       }
       (*col_i)++;
     }
-    return(0); // no coordinate obtained.
+    return(-1); // no coordinate obtained.
   }
   // otherwise we are mapping in the reverse direction.
   // We note that we might be able merge the two parts here, as the only difference is
@@ -348,7 +348,7 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   q_pos = 1 + q_len - q_pos;
   if(q_pos < 0){
     warning("Obtained a negative query position: %d for q_len %d", q_pos, q_len);
-    return(0);
+    return(-1);
   }
   while( *col_i >= beg ){
     int *coords = ops->data + (*col_i) * ops->nrow;
@@ -358,13 +358,13 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
       if( coords[op] == 0 ){
 	// do not add 1 here as it's already added to q_pos above.
 	*r_pos = coords[r0] + (q_pos - coords[q0]);
-	return(1);
+	return(q_pos);
       }
-      return(0);
+      return(-1);
     }
     (*col_i)--;
   }
-  return(0);
+  return(-1);
 }
 
 // parse MM AND ML strings; fill a  matrix with values;
@@ -372,9 +372,6 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 // This function assumes that all information will be contained within a single
 // MM and a single ML AUX field. I do not know if this is what the standard
 // specifies. This should be checked.
-//
-// INITIAL LIMITATION: to simplify initial implementation, this will only take
-// forward reads to start with. Reverse complemented ones have to be read backwards.
 //
 // s is 0 or a position in the bam_aux_string (ideally where MM starts)
 // if 0, it will be set to the beginning of the AU data;
@@ -394,7 +391,8 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 // query_to_ref(cigar, cigar_pos)
 // that moves to the next cigar position when needed to might make the most sense
 void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
-		     struct i_matrix *cig_ops, size_t ops_beg, size_t ops_end){
+		     struct i_matrix *cig_ops, size_t ops_beg, size_t ops_end,
+		     const char *ref_seq, size_t ref_seq_l){
   // mod_data should have 6 rows; these are
   // al_i, query_pos, mod_code, mod_n, mod_likelihood, ref_pos
   // This is very wasteful; we could get rid of al_i and return as elements of a list instead
@@ -419,10 +417,6 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   }
   int is_fwd = (b->core.flag & 16) ? 0 : 1;
   size_t current_op = is_fwd ? ops_beg : ops_end - 1;
-  /* if( b->core.flag & 16 ){ */
-  /*   warning("MM parsing not implemented for reversed sequences"); */
-  /*   return; */
-  /* } */
   // The key, type and tag can be obtained from: s - 2, *s and s+1
   // that is to say, that the complete field starts at s -2
   // since we need the key and type we simply subtract 2 from s.
@@ -466,12 +460,20 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
     warning("No MM data obtained for query: %s", bam_get_qname(b));
   }
   uint8_t *seq_data = bam_get_seq(b);
+  uint8_t *seq_qual = bam_get_qual(b);
+  if(seq_data == 0 || seq_qual == 0){
+    warning("No sequence or quality data for: %s", bam_get_qname(b));
+    return;
+  }
+  uint32_t nuc_info = 0; // will hold, ref, query base and query quality
   int32_t seq_i = 0;
+  int32_t qpos = 0;
   int32_t seql = b->core.l_qseq;
   // in theory it's possible for the pointer to become NULL, but
   // that would have to be after exceeding 2^64 - 1. Which would
   // mean that it's invalid anyway as we won't have that much memory.
-  while(data && data < end && *data >= '0' && *data <= '9'){ 
+  while(data && data < end && *data >= '0' && *data <= '9'){
+    char base = 0;
     int nb = atoi((const char*)data);
     // then process the query sequence to find the query position
     int base_count = 0;
@@ -480,7 +482,7 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
       seq_i = seq_i + nb;
     }else{
       while(seq_i < seql && base_count <= nb){
-	char base = is_fwd ? nuc_encoding[ bam_seqi(seq_data, seq_i) ] : nuc_encoding_rc[ bam_seqi(seq_data, seql-(seq_i+1)) ];
+	base = is_fwd ? nuc_encoding[ bam_seqi(seq_data, seq_i) ] : nuc_encoding_rc[ bam_seqi(seq_data, seql-(seq_i+1)) ];
 	if( base == nuc )
 	  ++base_count;
 	++seq_i;
@@ -497,8 +499,20 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
     // add a column to a table with the following rows:
     // alignment index, query position (seq_i), modification code, mod_n (number of modifications, up to 4), mod_likelihood, ref_pos
     // obtain the refeference position.
-    query_to_ref( seq_i, &r_pos, cig_ops, ops_beg, ops_end, &current_op, is_fwd, seql );
-    push_column( mod_data, (int[]){al_i, (int)seq_i, (int)mod_code, mod_n, 0, r_pos} );
+    qpos = query_to_ref( seq_i, &r_pos, cig_ops, ops_beg, ops_end, &current_op, is_fwd, seql );
+    nuc_info = 0;
+    char fwd_base = is_fwd ? nuc_encoding[ bam_seqi(seq_data, qpos-1) ] : nuc_encoding_rc[ bam_seqi(seq_data, qpos-1) ];
+    if(qpos > 0){
+      nuc_info |= (((uint32_t)base) << 24);
+      if(seq_qual && qpos <= seql)
+	nuc_info |= (((uint32_t)seq_qual[ qpos - 1 ]) << 16);
+      if(ref_seq && r_pos <= ref_seq_l){
+	nuc_info |= (((uint32_t)ref_seq[ r_pos - 1 ]) << 8);
+	nuc_info |= (ref_seq[r_pos-1] != fwd_base);
+      }
+    }
+    push_column( mod_data, (int[]){al_i, (int)qpos, (int)mod_code, mod_n, 0, r_pos, nuc_info} );
+    //    push_column( mod_data, (int[]){al_i, (int)seq_i, (int)mod_code, mod_n, 0, r_pos, nuc_info} );
     // find the comma or the semicolon
     while(*data && *data >= '0' && *data <= '9' )
       ++data;
@@ -855,6 +869,8 @@ int read_next_entry( struct bam_ptrs *bam, bam1_t *b){
 //     bit 3 = calculate the coverage depth
 //     bit 4 = reconstruct a cigar string
 //     bit 5 = return base qualities
+//     bit 6 = return mate information
+//     bit 7 = parse MM auxiliary string.
 //  If ref_seq_r AND (flag_filter & 3 == 3) then return all positions where
 //  there is a nucleotide difference
 //  min_mq_r : A minimum mapping quality
@@ -896,7 +912,9 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     opt_flag = 0;
   if((opt_flag & AR_Q_DIFF) != 0 && (TYPEOF(ref_seq_r) != STRSXP || length(ref_seq_r) != 1))
     error("Sequence divergence requested but ref_seq is not a character vector of length 1 ");
-  const char *ref_seq = ((opt_flag & AR_Q_DIFF) != 0) ? CHAR(STRING_ELT(ref_seq_r, 0)) : "";
+  const char *ref_seq = ((opt_flag & AR_Q_DIFF) != 0) ? CHAR(STRING_ELT(ref_seq_r, 0)) : 0;
+  // It seems that we can simply call LENGTH(STRING_ELT(ref_seq_r, 0))
+  // which returns an int. 
   size_t ref_seq_l = strlen(ref_seq); // this is potentiall rather slow, but necessary
   int *flag_filter_rp = INTEGER(flag_filter_r);
   // default values; no filtering
@@ -915,7 +933,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   int min_ql = asInteger(min_ql_r);
 
   // Set up the return data structure as a named list
-  SEXP ret_names_r = PROTECT( mk_strsxp( (const char*[]){"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual"}, 9 ));
+  SEXP ret_names_r = PROTECT( mk_strsxp( (const char*[]){"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual", "mm"}, 10 ));
   SEXP ret_data = PROTECT(allocVector(VECSXP, length(ret_names_r)));
   setAttrib( ret_data, R_NamesSymbol, ret_names_r );
 
@@ -927,7 +945,14 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     seq_depth = INTEGER(VECTOR_ELT(ret_data, 6));
     memset( seq_depth, 0, sizeof(int) * region_length );
   }
-  
+  // If the user has requested base modifications (AR_AUX_MM), then this implies QR_Q_QUAL
+  // Actually this is not necessary as the qualities are obtained directly
+  /* if(opt_flag & AR_AUX_MM) */
+  /*   opt_flag |= AR_Q_QUAL; */
+  // If the user has also provided a sequence then this implies returning the query sequences
+  // as well (as we anyway need to obtain them):
+  /* if((opt_flag & AR_AUX_MM) && ref_seq) */
+  /*   opt_flag |= AR_Q_SEQ; */
   // and then we do the whole business of getting the reads..
   // We use sam_itr_queryi, so that we can specify the region
   // numerically thus also allowing the same function to return the sequence depth for the region.
@@ -939,7 +964,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   int r=0;
   int al_count = 0;
   // Data structures that will hold the return data:
-  size_t init_size = 10;
+  size_t init_size = OPS_INIT_SIZE;
   struct str_array query_ids = init_str_array(init_size);
   // query_seq is filled ony if opt_flag & AR_Q_SEQ == 1
   struct str_array query_seq = init_str_array(init_size);
@@ -948,18 +973,26 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // We unfortunaly have ended up with a struct cigar_string,
   // and cigar, cigars and cigars_string variables; That is BAD, and ought to be cleaned up
   struct str_array cigars = init_str_array(init_size);
-  struct cigar_string cigars_string = cigar_string_init(256); // I feel dirty..
-  const char* rownames[8] = {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
-  struct i_matrix al_coord = init_i_matrix( 8, init_size );
+  struct cigar_string cigars_string = cigar_string_init(init_size);
+  
+  //  const char* rownames[8] = {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
+  // struct i_matrix al_coord = init_i_matrix( 8, init_size );
+  // rownames are in cig_ops_rownames
+  struct i_matrix al_coord = init_i_matrix( CIG_OPS_RN, init_size );
+  SEXP al_coord_rownames_r = PROTECT(mk_rownames( cig_ops_rownames, CIG_OPS_RN ));
 
   // For sequence variants in the reads:
   //  const char* var_coord_row_names[] = {"seq.id", "r.pos", "q.pos", "nuc"};
   struct i_matrix var_coord = init_i_matrix( 4, init_size );
   SEXP var_coord_row_names_r = PROTECT(mk_rownames( (const char*[]){"al.i", "r.pos", "q.pos", "nuc"}, 4 ));
 
+  // For base modification data:
+  struct i_matrix mm_info = init_i_matrix( MM_INFO_RN, init_size );
+  SEXP mm_info_rownames_r = PROTECT(mk_rownames( mm_info_rownames, MM_INFO_RN ));
+  
   //  int column[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   // dimNames_r used to set rownames for the main return table
-  SEXP dimNames_r = PROTECT(mk_rownames( rownames, 8 ));
+  //  SEXP dimNames_r = PROTECT(mk_rownames( rownames, 8 ));
   // We also want to return more basic information about the alignments eg.
   // flag, pos, mapq, qlen and tlen
   struct i_matrix al_vars = init_i_matrix( 8, init_size );
@@ -1036,6 +1069,9 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     int q_end=0;
     // calculate the true query length from the cigar string
     int qcig_length = 0;
+    // In order to parse MM data we need to pass the columns of the al_coord table
+    // that refer to the current alignment;
+    size_t ops_begin_col = al_coord.col;
     for(int i=0; i < cigar_l; ++i){
       // if operation is H also increment the qcig_length
       if( bam_cigar_type(cigar[i]) & 1 || bam_cigar_op( cigar[i] ) == BAM_CHARD_CLIP )
@@ -1047,10 +1083,6 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       int ref_1 = r_pos + (cig_type & CIG_OP_TP_RC ? cig_oplen : 0);
       int q_0 = q_pos;
       int q_1 = q_pos +  (cig_type & CIG_OP_TP_QC ? cig_oplen : 0);
-      /* column[1] = bam_cigar_op( cigar[i] ); //  + 1; // removed for consistency with cigar_to_table() */
-      /* column[2] = bam_cigar_type(cigar[i]); */
-      /* column[3] = r_pos; */
-      /* column[4] = q_pos; */
       if( q_beg == -1 && (cig_type & CIG_OP_TP_RC) )
 	q_beg = q_pos;
       // If the caller has requested the variance information and the
@@ -1086,17 +1118,19 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       r_pos += bam_cigar_type(cigar[i]) & CIG_OP_TP_RC ? bam_cigar_oplen( cigar[i] ) : 0;
       if(bam_cigar_type(cigar[i]) & 2)
 	q_end = q_pos;
-      /* column[5] = r_pos; */
-      /* column[6] = q_pos; */
-      /* column[7] = bam_cigar_oplen( cigar[i] ); */
       push_column( &al_coord, (int[]){al_count, cig_op, cig_type, ref_0, q_0, ref_1, q_1, cig_oplen} );
-      //      push_column( &al_coord, column );
     }
+    size_t ops_end_col = al_coord.col;
     av_column[2] = r_pos;
     av_column[3] = q_beg;
     av_column[4] = q_end;
     av_column[7] = qcig_length;
     push_column(&al_vars, av_column);
+    // We should modify the function so that we do not malloc and free for every query
+    // sequence.
+    if(opt_flag & AR_AUX_MM){
+      parse_MM_string(al, 0, &mm_info, al_count, &al_coord, ops_begin_col, ops_end_col, ref_seq, ref_seq_l);
+    }
     // qseq may be 0, but that should be safe to free.
     // We only need to free qseq if we did not store it in the str_array_object
     if( (opt_flag & AR_Q_SEQ) == 0 )
@@ -1137,7 +1171,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // alignment coordinates
   SET_VECTOR_ELT(ret_data, 3, allocMatrix(INTSXP, al_coord.nrow, al_coord.col));
   //  setAttrib( VECTOR_ELT(ret_data, 1), R_RowNamesSymbol, rowNames_r);
-  setAttrib( VECTOR_ELT(ret_data, 3), R_DimNamesSymbol, dimNames_r);
+  setAttrib( VECTOR_ELT(ret_data, 3), R_DimNamesSymbol, al_coord_rownames_r);
   memcpy( INTEGER(VECTOR_ELT(ret_data, 3)), al_coord.data, sizeof(int) * al_coord.nrow * al_coord.col);
   free(al_coord.data);
   // If we have variant data then we need to do something with it before freeing up the used memory.
@@ -1146,8 +1180,14 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     setAttrib( VECTOR_ELT(ret_data, 5), R_DimNamesSymbol, var_coord_row_names_r );
     memcpy( INTEGER(VECTOR_ELT(ret_data, 5)), var_coord.data, sizeof(int) * var_coord.nrow * var_coord.col );
   }
+  if(opt_flag & AR_AUX_MM){
+    SET_VECTOR_ELT(ret_data, 9, allocMatrix(INTSXP, mm_info.nrow, mm_info.col));
+    setAttrib( VECTOR_ELT(ret_data, 9), R_DimNamesSymbol, mm_info_rownames_r);
+    memcpy( INTEGER(VECTOR_ELT(ret_data, 9)), mm_info.data, sizeof(int) * mm_info.nrow * mm_info.col);
+  }
   free(var_coord.data);
-  UNPROTECT(5);
+  free(mm_info.data);
+  UNPROTECT(6);
   return(ret_data);
 }
 
@@ -1357,7 +1397,9 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
 					ops_begin, ops_end });
     }
     if(ret_flag & (1 << S_AUX_MM)){
-      parse_MM_string(b, 0, &mm_info, 1+(*count), &al_coord, ops_begin, ops_end);
+      // the last two arguments provide the reference sequence and its length; we don't
+      // have that here.
+      parse_MM_string(b, 0, &mm_info, 1+(*count), &al_coord, ops_begin, ops_end, 0, 0);
     }
     (*count)++;
   }

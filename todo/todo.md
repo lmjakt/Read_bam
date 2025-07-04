@@ -47,6 +47,12 @@
    instead creates the table first and then uses it to parse `MM` auxiliary tags (since it needs to do this in
    reverse for reverse complemented query sequences). We could make the functions more consistent though by
    having a helper function that parses a single cigar operation and assigns values to pointers.
+5. `alignments_region()` uses the helper function `bam_seq()` to convert bam sequence data to `R` char* objects.
+   `bam_seq()` calls `malloc` each time which then has to be freed; it would be better for it to take a pointer
+   to a buffer that it can realloc if needed.
+6. In `alignments_region()` I call `strlen()` to determine the length of the reference sequence. I think that
+   I should be able to simply use `LENGTH()` on the `CHARSXP` object instead and that this should be more
+   efficient.
 
 ## Irritating inconsistencies
 

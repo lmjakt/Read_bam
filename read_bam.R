@@ -38,6 +38,8 @@ clear.bam.iterator <- function(bam.ptr){
 ## 3 calculate sequencing depth throughout the region
 ## 4 construct a cigar string..
 ## 5 return qualities
+## 6 mate information.
+## 7 parse MM auxiliary data (base modifications)
 ## flag.filter: a vector of two elements, [ required flags, banned flags ]
 ## min.mq = minimum mapping quality
 ## min.ql = minimum query length (as reported in the bam_core field; this is not the

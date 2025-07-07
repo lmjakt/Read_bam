@@ -318,6 +318,8 @@ the bam handle (`load.bam()`).
     | 3 |  4 | 0x4 | Calculate sequencing depth throughout the specified region. |
     | 4 |  8 | 0x8 | Construct cigar strings for alignments. |
     | 5 | 16 | 0x10 | Return individual base qualities. |
+	| 6 | 32 | 0x20 | Return information about next mate. (Not implemented) |
+	| 7 | 64 | 0x40 | Parse auxiliary base modification data. (Not complete, see details) |
 
 	The argument is constructed by a bitwise `OR` of the individual bits.
 7. `ref.seq=""`: The sequence of the region specified as the first
@@ -393,6 +395,23 @@ the bam handle (`load.bam()`).
    (usually) non-printable string. This can be converted to integer quality
    values using the `utf8ToInt()` function. (POTENTIAL BUG: 0 quality values
    may end up being interpreted as end of strings. I need to confirm this).
+
+10. `mm`: NULL if `opt.flag` does not include 0x40. Otherwise a numeric matrix
+	with the following columns:
+	
+	| Column | Description |
+	| :---- | :--------------------------------------- |
+	| `al.i` | The alignment index (usually the row number of the `al` table. |
+	| `q.pos` | The position of the base in the query sequence as given in the bam file. |
+	| `mod` | The ascii value for the modification code (eg. 104 and 109 indicate `h` and `m` for *hydroxy-methylation* and *methylation* respectively. The type of modification and associated locations are defined by `MM` tag, where one location can be linked to one or more modifications. If locations are linked to more than one modification then the modification codes will be encoded in the four bytes of the `mod` integer value. This means that the parser and encoding can only handle up to four modifications encoded in this manner. This is not optimal and the encoding may change in future versions. |
+	| `mod.n` | The number of modifications that are encoded in each `mod` and `mod.l` value (up to four). Use `bitwAnd(0xFF, bitwShiftR(m, 8 * i))`,
+	where `i` is the 0-based index of the modification (`0 >= i < mod.n` ) and `m` is `mod.l` or `mod`. |
+	| `r.pos` | The position in the reference sequence. This is `-1` if the base is not aligned.
+	| `base.inf` | Information about the base held in the four bytes of an integer value. The four bytes of each value hold (from most significant to least significant): The query base in the original read, the query base quality, the reference base, and a logical value (0 or 1) indicating whether the reference and query bases match. Note that "match" can be 1 (TRUE) even if the query and reference bases are different if the read was in the opposite direction to the reference. |
+
+	Base modifications may be indicated by `ChEBI` codes as well. These
+	are not currently supported. Including support for `ChEBI` modification
+	encoding is not difficult, but isn't a current priority.
 
 The key elements of this list are the `al` and `ops` matrices. In particular
 the `ops` makes it possible to visualise all alignments with a single call to

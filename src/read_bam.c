@@ -336,11 +336,11 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 	  *r_pos = coords[r0] + (q_pos - coords[q0]);
 	  return(q_pos);
 	}
-	return(-1);
+	return(q_pos); // q_pos is within a cigar op
       }
       (*col_i)++;
     }
-    return(-1); // no coordinate obtained.
+    return(-1); // q_pos is outside of the cigar ops: this shouldn't happen
   }
   // otherwise we are mapping in the reverse direction.
   // We note that we might be able merge the two parts here, as the only difference is
@@ -360,7 +360,7 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 	*r_pos = coords[r0] + (q_pos - coords[q0]);
 	return(q_pos);
       }
-      return(-1);
+      return(q_pos);
     }
     (*col_i)--;
   }

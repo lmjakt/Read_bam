@@ -40,7 +40,7 @@ static const char* cig_ops_rownames[CIG_OPS_RN] = {"al.i", "op", "type", "r0", "
 static const char* q_info_rownames[Q_INFO_RN] = {"qlen", "q.cigl", "q.beg", "q.end", "ops.beg", "ops.end"};
 
 #define MM_INFO_RN 7
-static const char* mm_info_rownames[MM_INFO_RN] = {"al.i", "q.pos", "mod", "mod.n", "mod.l", "r.pos", "nuc.inf"};
+static const char* mm_info_rownames[MM_INFO_RN] = {"al.i", "q.pos", "mod", "mod.n", "mod.l", "r.pos", "base.inf"};
 
 
 // not sure why this isn't in a header somewhere

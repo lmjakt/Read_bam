@@ -404,8 +404,7 @@ the bam handle (`load.bam()`).
 	| `al.i` | The alignment index (usually the row number of the `al` table. |
 	| `q.pos` | The position of the base in the query sequence as given in the bam file. |
 	| `mod` | The ascii value for the modification code (eg. 104 and 109 indicate `h` and `m` for *hydroxy-methylation* and *methylation* respectively. The type of modification and associated locations are defined by `MM` tag, where one location can be linked to one or more modifications. If locations are linked to more than one modification then the modification codes will be encoded in the four bytes of the `mod` integer value. This means that the parser and encoding can only handle up to four modifications encoded in this manner. This is not optimal and the encoding may change in future versions. |
-	| `mod.n` | The number of modifications that are encoded in each `mod` and `mod.l` value (up to four). Use `bitwAnd(0xFF, bitwShiftR(m, 8 * i))`,
-	where `i` is the 0-based index of the modification (`0 >= i < mod.n` ) and `m` is `mod.l` or `mod`. |
+	| `mod.n` | The number of modifications that are encoded in each `mod` and `mod.l` value (up to four). Use `bitwAnd(0xFF, bitwShiftR(m, 8 * i))`, where `i` is the 0-based index of the modification (`0 >= i < mod.n` ) and `m` is `mod.l` or `mod`. |
 	| `r.pos` | The position in the reference sequence. This is `-1` if the base is not aligned.
 	| `base.inf` | Information about the base held in the four bytes of an integer value. The four bytes of each value hold (from most significant to least significant): The query base in the original read, the query base quality, the reference base, and a logical value (0 or 1) indicating whether the reference and query bases match. Note that "match" can be 1 (TRUE) even if the query and reference bases are different if the read was in the opposite direction to the reference. |
 
@@ -556,16 +555,9 @@ If not `NULL`, the `q.inf` matrix will contain the following columns:
 | ops.beg | The first row of the alignment in the ops table (0-based; so 0 indicates row 1) |
 | ops.end | The last row of the alignment in the ops table (1-based; so 1 indicates row 1). ops.end - ops.beg gives the number of cigar operations for any given alignment. |
 
-If not `NULL`, the `mm` element will contain a matrix with the following columns:
+If not `NULL`, the `mm` element will contain a matrix as described for the `alignments.region()` function. However, since
+`sam.read.n()` does not accept a reference sequence as an argument the two last byte values of the `base.inf` column will always be 0.
 
-| column | description |
-| :--- | :---------------------------------- |
-| al.i | The alignment index (row in al) |
-| q.pos | The position in the query sequence. |
-| mod | The type of modification. This is given as up to four 8 bit values encoded within a 32 bit integer. This means that only 4 modifications can be encoded. To extract the values you need to use bitwise shifts followed by bitwise masking and finally `intToutf8()`. This may be problematic for four different modifications due to the lack of unsigned integers in R. I have not tried. | 
-| mod.n | The number of modifications found. |
-| mod.l | The likelihood of the modification. This is encoded as up to four unsigned 8 bit integers held in a 32 bit integer. The likelihood values are from 0 to 255 and map linearly to likelihoods between 0 and 1 |
-| r.pos | The reference position. |
 
 Examples of how to most efficiently extract modification data will be given later.
 

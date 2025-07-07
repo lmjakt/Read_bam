@@ -412,6 +412,8 @@ the bam handle (`load.bam()`).
 	Base modifications may be indicated by `ChEBI` codes as well. These
 	are not currently supported. Including support for `ChEBI` modification
 	encoding is not difficult, but isn't a current priority.
+	
+	The individual bytes of `mod` and `base.inf` can be extracted with the `int.to.bytes()` function provided.
 
 The key elements of this list are the `al` and `ops` matrices. In particular
 the `ops` makes it possible to visualise all alignments with a single call to
@@ -732,3 +734,13 @@ A dataframe with the following columns:
 4. `q.pos`: The query position immediately before the insertion.
 5. `seq.ins`: The sequence inserted plus the the margins specified.
 
+## `int.to.bytes()`
+
+Extracts the four bytes of individual integers into four columns of
+a numeric matrix.
+
+### Arguments:
+
+1. `i`: An integer vector.
+2. `names`: A character vector giving specifying the column names. Defaults
+   to `b1, b2, b3, b4`.

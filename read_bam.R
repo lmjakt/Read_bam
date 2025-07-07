@@ -221,5 +221,12 @@ extract.aux <- function(aux, tags, types){
     tmp
 }
 
-
-
+## extract the 4 individual bytes from each value of an integer value
+## and return as a matrix with a column for each byte:
+int.to.bytes <- function(i, names=paste0("b", 1:4)){
+    tmp <- sapply(3:0, function(j){
+        bitwAnd(0xFF, bitwShiftR(i, j * 8))
+    })
+    colnames(tmp) <- names[1:4]
+    tmp
+}

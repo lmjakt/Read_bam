@@ -16,6 +16,9 @@
    position of the first base in the original query string. That is whether they should be sensitive
    to both hard and soft clipping or just hard clipping. I'm leaning towards the latter, but haven't
    made my mind up yet.
+3. `load.bam` is unable to work with the `~` expansion. This should be
+   considered as a bug since `R` accepts `~` as a short cut for `$HOME`;
+   
 
 ## Features
 

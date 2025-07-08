@@ -510,6 +510,8 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
 	nuc_info |= (((uint32_t)ref_seq[ r_pos - 1 ]) << 8);
 	nuc_info |= (ref_seq[r_pos-1] == fwd_base);
       }
+      // if the base is fwd, set the second bit:
+      nuc_info |= (is_fwd << 1);
     }
     push_column( mod_data, (int[]){al_i, (int)qpos, (int)mod_code, mod_n, 0, r_pos, nuc_info} );
     //    push_column( mod_data, (int[]){al_i, (int)seq_i, (int)mod_code, mod_n, 0, r_pos, nuc_info} );
@@ -912,10 +914,10 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     opt_flag = 0;
   if((opt_flag & AR_Q_DIFF) != 0 && (TYPEOF(ref_seq_r) != STRSXP || length(ref_seq_r) != 1))
     error("Sequence divergence requested but ref_seq is not a character vector of length 1 ");
-  const char *ref_seq = ((opt_flag & AR_Q_DIFF) != 0) ? CHAR(STRING_ELT(ref_seq_r, 0)) : 0;
-  // It seems that we can simply call LENGTH(STRING_ELT(ref_seq_r, 0))
-  // which returns an int. 
-  size_t ref_seq_l = strlen(ref_seq); // this is potentiall rather slow, but necessary
+  const char *ref_seq = (TYPEOF(ref_seq_r) == STRSXP) ? CHAR(STRING_ELT(ref_seq_r, 0)) : 0;
+  // which returns an int (which we can change to a size_t)
+  size_t ref_seq_l = (size_t)(ref_seq != 0) ? LENGTH(STRING_ELT(ref_seq_r, 0)) : 0;
+  //  size_t ref_seq_l = strlen(ref_seq); // this is potentiall rather slow, but necessary
   int *flag_filter_rp = INTEGER(flag_filter_r);
   // default values; no filtering
   uint32_t flag_filter[2] = {0, 0};
@@ -945,7 +947,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     seq_depth = INTEGER(VECTOR_ELT(ret_data, 6));
     memset( seq_depth, 0, sizeof(int) * region_length );
   }
-  // If the user has requested base modifications (AR_AUX_MM), then this implies QR_Q_QUAL
+  // If the user has requested base modifications (AR_AUX_MM), then this implies AR_Q_QUAL
   // Actually this is not necessary as the qualities are obtained directly
   /* if(opt_flag & AR_AUX_MM) */
   /*   opt_flag |= AR_Q_QUAL; */

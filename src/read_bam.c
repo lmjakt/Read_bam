@@ -7,6 +7,23 @@
 
 // This provides acces to bam / sam and bcf / vcf files.
 
+// The following define what should be returned from calls to
+// alignments_region()
+// The mess of flags is as usual for historical reasons
+#define AR_Q_SEQ 1 // return query seq data
+#define AR_Q_DIFF 2 // return positions an identities where query != ref
+#define AR_Q_DEPTH 4 // return sequencing depth
+#define AR_CIG 8     // construct and return a cigar string
+#define AR_Q_QUAL 16 // return query qualities (ascii encoded; i.e. phred + 0)
+#define AR_MT_INFO 32 // return information about mate including tlen (not implemented)
+#define AR_AUX_MM 64 // parse MM info; implies if AR_Q_QUAL, and (AR_Q_SEQ if reference sequence defined).
+#define AR_Q_INTRON_DEPTH 128 // calculate depths for N operations only; useful for RNA-seq data.
+
+#define MAX_INTRON_L 4096 // if not set by user
+// The number of fields in the list returned by alignments_region()
+#define AR_R_FIELDS_N 11
+static const char* ar_return_fields[AR_R_FIELDS_N] = {"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual", "mm", "intron.depth"};
+
 // define the bit positions of a set of ret_flag values
 // note that these start at 0, so that they can be used
 // by: 1 << S_QID  => 0, 1 << S_FLAG => 2, etc..
@@ -26,16 +43,6 @@
 #define S_CIG_TABLE 12  // 0x1000
 #define S_AUX_MM 14  // 0x4000
 
-// The following define what should be returned from calls to
-// alignments_region()
-// The mess of flags is as usual for historical reasons
-#define AR_Q_SEQ 1 // return query seq data
-#define AR_Q_DIFF 2 // return positions an identities where query != ref
-#define AR_Q_DEPTH 4 // return sequencing depth
-#define AR_CIG 8     // construct and return a cigar string
-#define AR_Q_QUAL 16 // return query qualities (ascii encoded; i.e. phred + 0)
-#define AR_MT_INFO 32 // return information about mate including tlen (not implemented)
-#define AR_AUX_MM 64 // parse MM info; implies if AR_Q_QUAL, and (AR_Q_SEQ if reference sequence defined).
 
 
 // and a vector of return types:
@@ -873,15 +880,17 @@ int read_next_entry( struct bam_ptrs *bam, bam1_t *b){
 //     bit 5 = return base qualities
 //     bit 6 = return mate information
 //     bit 7 = parse MM auxiliary string.
+//     bit 8 = return intron depth
 //  If ref_seq_r AND (flag_filter & 3 == 3) then return all positions where
 //  there is a nucleotide difference
 //  min_mq_r : A minimum mapping quality
 //  min_ql_r : A minimum query length, taken from bam1_core_t.qlen
 //             which does not necessarily equate to the read length
+//  max_intron_l : max intron length. Only relevant if intron depth is requested
 SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 		       SEXP bam_ptr_r, SEXP flag_filter_r, 
 		       SEXP opt_flag_r, SEXP ref_seq_r,
-		       SEXP min_mq_r, SEXP min_ql_r){
+		       SEXP min_mq_r, SEXP min_ql_r, SEXP max_intron_l_r){
   if(TYPEOF(region_r) != STRSXP || length(region_r) < 1)
     error("region_r should be a character vector of positive length");
   struct bam_ptrs *bam = extract_bam_ptr(bam_ptr_r);
@@ -935,7 +944,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   int min_ql = asInteger(min_ql_r);
 
   // Set up the return data structure as a named list
-  SEXP ret_names_r = PROTECT( mk_strsxp( (const char*[]){"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual", "mm"}, 10 ));
+  SEXP ret_names_r = PROTECT( mk_strsxp(ar_return_fields, AR_R_FIELDS_N) );
   SEXP ret_data = PROTECT(allocVector(VECSXP, length(ret_names_r)));
   setAttrib( ret_data, R_NamesSymbol, ret_names_r );
 
@@ -946,6 +955,19 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     SET_VECTOR_ELT( ret_data, 6, allocVector(INTSXP, region_length) );
     seq_depth = INTEGER(VECTOR_ELT(ret_data, 6));
     memset( seq_depth, 0, sizeof(int) * region_length );
+  }
+  // And similarly for the intron depth:
+  int max_intron_length = MAX_INTRON_L; // unless set by user
+  if(TYPEOF(max_intron_l_r) == INTSXP && length(max_intron_l_r) == 1){
+    max_intron_length = INTEGER(max_intron_l_r)[0];
+  }else{
+    warning("max_intron_length set to default value (%d)", max_intron_length);
+  }
+  int *intron_depth = 0;
+  if(opt_flag & AR_Q_INTRON_DEPTH){
+    SET_VECTOR_ELT( ret_data, 10, allocVector(INTSXP, region_length));
+    intron_depth = INTEGER(VECTOR_ELT(ret_data, 10));
+    memset( intron_depth, 0, sizeof(int) * region_length );
   }
   // If the user has requested base modifications (AR_AUX_MM), then this implies AR_Q_QUAL
   // Actually this is not necessary as the qualities are obtained directly
@@ -1110,6 +1132,14 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 	    if(o >= 0 && o < region_length)
 	      seq_depth[o]++;
 	  }
+	}
+      }
+      if( (opt_flag & AR_Q_INTRON_DEPTH) && cig_op == BAM_CREF_SKIP
+	  && cig_oplen <= max_intron_length){
+	for(int j=0; j < cig_oplen; ++j){
+	  int o = (r_pos+j) - region_range[0];
+	  if(o >= 0 && o < region_length)
+	    intron_depth[o]++;
 	}
       }
       // if an insertion then we need to increment the depth at a single
@@ -2229,7 +2259,7 @@ static const R_CallMethodDef callMethods[] = {
   {"load_bam", (DL_FUNC)&load_bam, 2},
   {"set_iterator", (DL_FUNC)&set_iterator, 3},
   {"clear_iterator", (DL_FUNC)&clear_iterator, 1},
-  {"alignments_region", (DL_FUNC)&alignments_region, 8},
+  {"alignments_region", (DL_FUNC)&alignments_region, 9},
   {"count_region_alignments", (DL_FUNC)&count_region_alignments, 5},
   {"sam_read_n", (DL_FUNC)&sam_read_n, 4},
   {"sam_flag_stats", (DL_FUNC)&sam_flag_stats, 2},
@@ -2240,6 +2270,7 @@ static const R_CallMethodDef callMethods[] = {
   {"extract_aux_tags", (DL_FUNC)&extract_aux_tags, 3},
   {"load_bcf", (DL_FUNC)&load_bcf, 2},
   {"bcf_read_n", (DL_FUNC)&bcf_read_n, 3},
+  {"arrange_lines", (DL_FUNC)&arrange_lines, 2},
   {NULL, NULL, 0}
 };
 

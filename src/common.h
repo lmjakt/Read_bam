@@ -1,6 +1,9 @@
 #ifndef _COMMON_H
 #define _COMMON_H
 
+#include <R.h>
+#include <Rinternals.h>
+
 // Useful constants:
 
 // The following are true for the encoding used in cig_ops tables;
@@ -128,6 +131,14 @@ void vectori_free(struct vectori *v);
 // delim: the char to split by
 // n: a pointer to an integer whose value will be set to the number of strings
 char **split_string(const char *str, char delim, unsigned int *n);
+
+// stolen from simple_range/arrange_lines.c
+// x1 and x1 are positions of lines that should be drawn
+// The function finds y positions that allow this without
+// overlaps.
+// Note that for each pair of x1 and x2, x1 must be smaller
+// than x2
+SEXP arrange_lines(SEXP r_x1, SEXP r_x2);
 
 #endif
 

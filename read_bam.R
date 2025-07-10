@@ -40,14 +40,16 @@ clear.bam.iterator <- function(bam.ptr){
 ## 5 return qualities
 ## 6 mate information.
 ## 7 parse MM auxiliary data (base modifications)
+## 8 intron depth vector
 ## flag.filter: a vector of two elements, [ required flags, banned flags ]
 ## min.mq = minimum mapping quality
 ## min.ql = minimum query length (as reported in the bam_core field; this is not the
 ##          same as the actual query length.
 aligned.region <- function(region, range, bam.ptr, transpose=TRUE, flag.filter=c(0,0),
-                           opt.flag=0L, ref.seq="", min.mq=0, min.ql=0){
+                           opt.flag=0L, ref.seq="", min.mq=0, min.ql=0, max.intron.length=4096L){
     tmp <- .Call("alignments_region", region, as.integer(range), bam.ptr, as.integer(flag.filter),
-                 as.integer(opt.flag), ref.seq, as.integer(min.mq), as.integer(min.ql))
+                 as.integer(opt.flag), ref.seq, as.integer(min.mq), as.integer(min.ql),
+                 as.integer(max.intron.length))
     if(transpose){
         tmp <- lapply(tmp, function(x){
             if( length(dim(x)) == 2 )
@@ -229,4 +231,22 @@ int.to.bytes <- function(i, names=paste0("b", 1:4)){
     })
     colnames(tmp) <- names[1:4]
     tmp
+}
+
+## For drawing:
+## stolen from simple_range.R: The interface should change at some point.
+## x should be a matrix with two columns
+## if no columns with name x0 and x1, then the
+## first two columns will be taken to represent x0 and x1
+## respectively.
+arrange.lines <- function(x){
+    if(!is.matrix(x) || !is.numeric(x) || ncol(x) < 2)
+        stop("x should be a numeric matrix with at least two columns")
+    if(!all(c('x0', 'x1') %in% colnames(x)))
+        colnames(x)[1:2] <- c('x0', 'x1')
+    if(any( x[,'x0'] >= x[,'x1'] ))
+        stop("all x0 values must be smaller than x1")
+    if(any(is.na(x[,c('x0', 'x1')])))
+       stop("NA values not allowed")
+    .Call("arrange_lines", as.double(x[,'x0']), as.double(x[,'x1']))
 }

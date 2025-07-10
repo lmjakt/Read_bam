@@ -56,6 +56,12 @@
 6. In `alignments_region()` I call `strlen()` to determine the length of the reference sequence. I think that
    I should be able to simply use `LENGTH()` on the `CHARSXP` object instead and that this should be more
    efficient.
+7. `alignments_region` defines a set of FLAG values that are used to determine what to return. These
+   are given as the FLAG values (i.e. 1, 2, 4, ...). It would be better to use bitshift values as
+   for `sam_read_n`; these can be chosen so that they correspond to the field in the return list;
+   checking them requires expression like: `opt_flag & (1 << AR_Q_DIFF)`, but it means I can do:
+   `if(opt_flag ^ (1 << AR_Q_DEPTH)) SET_VECTOR_ELT(ret_data, AR_Q_DEPTH, allocVECTOR(...`. Which
+   would remove some dangerous values.
 
 ## Irritating inconsistencies
 

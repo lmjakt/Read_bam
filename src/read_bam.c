@@ -1128,7 +1128,8 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 	    }
 	  }
 	  if(opt_flag & AR_Q_DEPTH){
-	    int o = (r_pos+j) - region_range[0];
+	    // r_pos is 1 based
+	    int o = (r_pos+j-1) - region_range[0];
 	    if(o >= 0 && o < region_length)
 	      seq_depth[o]++;
 	  }
@@ -1137,7 +1138,8 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       if( (opt_flag & AR_Q_INTRON_DEPTH) && cig_op == BAM_CREF_SKIP
 	  && cig_oplen <= max_intron_length){
 	for(int j=0; j < cig_oplen; ++j){
-	  int o = (r_pos+j) - region_range[0];
+	  // r_pos is 1 based
+	  int o = (r_pos+j-1) - region_range[0];
 	  if(o >= 0 && o < region_length)
 	    intron_depth[o]++;
 	}

@@ -277,7 +277,7 @@ uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_i
     return(0);
   }
   if(i > 4){
-    warning("No more than four modifications allowed");
+    warning("No more than four modifications per position allowed");
     return(0);
   }
   *skip_info = data[i];
@@ -382,7 +382,7 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 //
 // s is 0 or a position in the bam_aux_string (ideally where MM starts)
 // if 0, it will be set to the beginning of the AU data;
-// I should probably remove this argument as it is possible for ML precede MM
+// I should probably remove this argument as it is possible for ML to precede MM
 // in which case specifying s is problematic.
 //
 // To define positions in the reference we need to parse the cigar; we could do that
@@ -413,7 +413,7 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
     warning("cigar op rows out of range: %ld -> %ld but only %ld columns of data", ops_beg, ops_end, cig_ops->col);
     return;
   }
-  int mod_data_begin = mod_data->col; // in order to check that the qualities correspond as they should.
+  int mod_data_begin = mod_data->col; 
   // return if hard clipped. With hard clipping we have
   // no means of identifying the locations in the sequence.
   uint32_t *cigar = bam_get_cigar(b);
@@ -424,7 +424,11 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   }
   int is_fwd = (b->core.flag & 16) ? 0 : 1;
   size_t current_op = is_fwd ? ops_beg : ops_end - 1;
-  // The key, type and tag can be obtained from: s - 2, *s and s+1
+  // MM tags take the following pattern: "MM:Z:C+h?,
+  // with the ':' omitted in the binary data.
+  // bam_aux_first, bam_aux_next give pointers to the beginning of the auxiliary
+  // string.
+  // the key (MM), type (Z) and tag can be obtained from: s - 2, *s and s+1
   // that is to say, that the complete field starts at s -2
   // since we need the key and type we simply subtract 2 from s.
   // but we cannot subtract before checking for null
@@ -433,6 +437,7 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   uint8_t *end = b->data + b->l_data;
   short MM = *((short*)"MM");
   short ML = *((short*)"ML");
+  // mm and ml hold the positions of the MM and ML auxiliary data.
   uint8_t *mm = 0;
   uint8_t *ml = 0;
   while(s){ 
@@ -445,6 +450,12 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   if(mm == 0){
     // either some error, or no data; note that ml, is optional.
     // we should consider checking errno; if EINVAL, then data is corrupt.
+    return;
+  }
+  // The modification code should start at mm+5; this must not be past the end of the
+  // auxiliary data since we directly take the address.
+  if(mm + 5 >= end){
+    warning("Modification code data after end of auxiliary string for: %s", bam_get_qname(b));
     return;
   }
   // the type for MM should be Z. We don't know how many positions we are going
@@ -476,12 +487,14 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   int32_t seq_i = 0;
   int32_t qpos = 0;
   int32_t seql = b->core.l_qseq;
+  uint32_t mod_pos_count = 0;
   // in theory it's possible for the pointer to become NULL, but
   // that would have to be after exceeding 2^64 - 1. Which would
   // mean that it's invalid anyway as we won't have that much memory.
   while(data && data < end && *data >= '0' && *data <= '9'){
     char base = 0;
     int nb = atoi((const char*)data);
+    mod_pos_count++;
     // then process the query sequence to find the query position
     int base_count = 0;
     int r_pos = -1;
@@ -526,13 +539,15 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
     while(*data && *data >= '0' && *data <= '9' )
       ++data;
     if(*data == ';'){
-        nuc = data[1];
-    	strand = data[2];
-    	data = get_ml_code(data+3, &mod_code, &mod_n, &skip_info);
-    	current_op = is_fwd ? ops_beg : ops_end - 1;
-    	// here data can be 0 if the ';' indicates the end of the MM field.
-    	seq_i = 0;
-    	continue;
+      if(data[1] == 0)
+	break;
+      nuc = data[1];
+      strand = data[2];
+      data = get_ml_code(data+3, &mod_code, &mod_n, &skip_info);
+      current_op = is_fwd ? ops_beg : ops_end - 1;
+      // here data can be 0 if the ';' indicates the end of the MM field.
+      seq_i = 0;
+      continue;
     }
     ++data;
   }
@@ -540,21 +555,26 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   if(ml == 0)
     return;
   // mm is encoded as ML:B:C, that is as single bytes; we may have more than one if
-  // mod_n > 1. Should not be more than 0.
+  // mod_n > 1. Should not be more than 4.
   if(ml[2] != 'B'){
     warning("Expected B in ML auxiliary data");
     return;
   }
   if(ml[3] != 'C'){
-    warning("Exptected a C in ML auxiliary data but got %c", ml[3]);
+    warning("Expected a C in ML auxiliary data but got %c", ml[3]);
     return;
   }
+  // An auxiliary with a B type has the following structure:
+  // [tag:2 bytes][B: 1 byte][ c|C|s|S|i|I|f 1 byte ][ count: 4 bytes (int) ]
+  // Hence we get the number of entries at ml + 4
   uint32_t ml_count = *((int32_t*)(ml + 4));
-  // we should check if this corresponds to our expectation; we need to keep a count
-  // of things above to check this.
+  if(ml_count != mod_pos_count)
+    warning("parse_MM: ml_count (%d) does not equal mod_pos_count (%d) for %s\n(end - ml = %ld)",
+	    ml_count, mod_pos_count, bam_get_qname(b), end-ml);
+  // And the quality (likelihood of modification data) starts at ml + 8
+  uint8_t *qual = ml + 8;
   uint32_t i=0;
   int col = mod_data_begin;
-  uint8_t *qual = ml + 8;
   while(i < ml_count){
     if(col >= mod_data->col){
       warning("exceeded the number of columns in mod_data");
@@ -565,7 +585,6 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
       col_data[ 4 ] |= (((uint32_t)(qual[i])) << (j*8));
       ++i;
     }
-    //    col_data[4] = (int)col_data[4];
     ++col;
   }
   // At this point we have certain expectations. For example

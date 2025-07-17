@@ -23,10 +23,11 @@ ref.seq <- read.fasta("KI270733.fasta")
 
 bam.f <- "test_srt.bam"
 region <- "KI270733.1"
-range <- c(130000, 131000)
+range <- c(130000, 141000)
 
 ## create an external pointer
 ## and obtain the lengths of reference regions
+source('../read_bam.R')
 bam.ptr <- load.bam(bam.f)
 tl <- target.lengths(bam.ptr)
 
@@ -46,6 +47,12 @@ system.time(
 ## on my laptop:
 ##  user  system elapsed 
 ## 0.025   0.000   0.025
+
+sapply(bam.reg, length)
+
+bam.reg <- aligned.region(region, c(0, tl[region]), bam.ptr,
+                          opt.flag=2^5-1 - (1+8), transpose=TRUE, ref.seq=ref.seq)
+sapply(bam.reg, length)
 
 ## check if we get the same number of alignments using the count.alignments function
 

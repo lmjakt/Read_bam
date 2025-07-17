@@ -10,14 +10,14 @@
 // The following define what should be returned from calls to
 // alignments_region()
 // The mess of flags is as usual for historical reasons
-#define AR_Q_SEQ 1 // return query seq data
-#define AR_Q_DIFF 2 // return positions an identities where query != ref
-#define AR_Q_DEPTH 4 // return sequencing depth
-#define AR_CIG 8     // construct and return a cigar string
-#define AR_Q_QUAL 16 // return query qualities (ascii encoded; i.e. phred + 0)
-#define AR_MT_INFO 32 // return information about mate including tlen (not implemented)
-#define AR_AUX_MM 64 // parse MM info; implies if AR_Q_QUAL, and (AR_Q_SEQ if reference sequence defined).
-#define AR_Q_INTRON_DEPTH 128 // calculate depths for N operations only; useful for RNA-seq data.
+#define AR_Q_SEQ 0 // 0x1 // return query seq data
+#define AR_Q_DIFF 1 // 0x2 // return positions an identities where query != ref
+#define AR_Q_DEPTH 2 // 0x4 // return sequencing depth
+#define AR_CIG 3 // 0x8      construct and return a cigar string
+#define AR_Q_QUAL 4 // 0x10  return query qualities (ascii encoded; i.e. phred + 0)
+#define AR_MT_INFO 5 // 0x20   return information about mate including tlen (not implemented)
+#define AR_AUX_MM 6 // 0x40  parse MM info; implies if AR_Q_QUAL, and (AR_Q_SEQ if reference sequence defined).
+#define AR_Q_INTRON_DEPTH 7 // 0x80  calculate depths for N operations only; useful for RNA-seq data.
 
 #define MAX_INTRON_L 4096 // if not set by user
 // The number of fields in the list returned by alignments_region()
@@ -43,7 +43,8 @@ static const char* ar_return_fields[AR_R_FIELDS_N] = {"ref", "query", "al", "ops
 #define S_CIG_TABLE 12  // 0x1000
 #define S_AUX_MM 14  // 0x4000
 
-
+// to check if a bit is set we can use:
+#define bit_set(flag, bit) ( ((1 << (bit)) & (flag)) > 0 )
 
 // and a vector of return types:
 //  Note that these are specific to sam_read_n()
@@ -940,7 +941,8 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   int opt_flag = asInteger(opt_flag_r);
   if(opt_flag < 0)
     opt_flag = 0;
-  if((opt_flag & AR_Q_DIFF) != 0 && (TYPEOF(ref_seq_r) != STRSXP || length(ref_seq_r) != 1))
+  //  if((opt_flag & AR_Q_DIFF) != 0 && (TYPEOF(ref_seq_r) != STRSXP || length(ref_seq_r) != 1))
+  if(bit_set(opt_flag, AR_Q_DIFF) && (TYPEOF(ref_seq_r) != STRSXP || length(ref_seq_r) != 1))
     error("Sequence divergence requested but ref_seq is not a character vector of length 1 ");
   const char *ref_seq = (TYPEOF(ref_seq_r) == STRSXP) ? CHAR(STRING_ELT(ref_seq_r, 0)) : 0;
   // which returns an int (which we can change to a size_t)
@@ -970,7 +972,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // If depth requested we can add this to the data structure immediately..
   int *seq_depth = 0;
   int region_length = 1 + region_range[1] - region_range[0];
-  if(opt_flag & AR_Q_DEPTH){
+  if(bit_set(opt_flag, AR_Q_DEPTH)){
     SET_VECTOR_ELT( ret_data, 6, allocVector(INTSXP, region_length) );
     seq_depth = INTEGER(VECTOR_ELT(ret_data, 6));
     memset( seq_depth, 0, sizeof(int) * region_length );
@@ -983,20 +985,11 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     warning("max_intron_length set to default value (%d)", max_intron_length);
   }
   int *intron_depth = 0;
-  if(opt_flag & AR_Q_INTRON_DEPTH){
+  if(bit_set(opt_flag, AR_Q_INTRON_DEPTH)){
     SET_VECTOR_ELT( ret_data, 10, allocVector(INTSXP, region_length));
     intron_depth = INTEGER(VECTOR_ELT(ret_data, 10));
     memset( intron_depth, 0, sizeof(int) * region_length );
   }
-  // If the user has requested base modifications (AR_AUX_MM), then this implies AR_Q_QUAL
-  // Actually this is not necessary as the qualities are obtained directly
-  /* if(opt_flag & AR_AUX_MM) */
-  /*   opt_flag |= AR_Q_QUAL; */
-  // If the user has also provided a sequence then this implies returning the query sequences
-  // as well (as we anyway need to obtain them):
-  /* if((opt_flag & AR_AUX_MM) && ref_seq) */
-  /*   opt_flag |= AR_Q_SEQ; */
-  // and then we do the whole business of getting the reads..
   // We use sam_itr_queryi, so that we can specify the region
   // numerically thus also allowing the same function to return the sequence depth for the region.
   hts_itr_t *b_itr = sam_itr_queryi(bam->index, target_id, region_range[0], region_range[1]);
@@ -1009,7 +1002,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // Data structures that will hold the return data:
   size_t init_size = OPS_INIT_SIZE;
   struct str_array query_ids = init_str_array(init_size);
-  // query_seq is filled ony if opt_flag & AR_Q_SEQ == 1
+  // query_seq is filled ony if opt_flag & (1 << AR_Q_SEQ) == 1
   struct str_array query_seq = init_str_array(init_size);
   // query_qual is filled if AR_Q_QUAL is set
   struct str_array query_qual = init_str_array(init_size);
@@ -1063,14 +1056,14 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       continue;
     str_array_push_cp(&query_ids, bam_get_qname(al));
     // read the cigar and push it to cigars
-    if(opt_flag & AR_CIG){
+    if(bit_set(opt_flag, AR_CIG)){
       cigar_string_read( &cigars_string, al );
       str_array_push_cp(&cigars, cigars_string.buffer );
     }
-    if(opt_flag & (AR_Q_SEQ | AR_Q_DIFF)){
+    if(bit_set(opt_flag, AR_Q_SEQ) || bit_set(opt_flag, AR_Q_DIFF)){
       qseq = bam_seq(al);
       qqual = bam_get_qual(al);
-      if(opt_flag & AR_Q_SEQ){
+      if(bit_set(opt_flag, AR_Q_SEQ)){
 	if(qseq)
 	  str_array_push(&query_seq, qseq);
 	else
@@ -1082,7 +1075,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     // have to increment every value by a set amount (eg. 33); But this is slow.
     // I will need some time to consider this.
     // In R I don't think I have a way to handle the data encoded in this way.
-    if(opt_flag & AR_Q_QUAL){
+    if(bit_set(opt_flag, AR_Q_QUAL)){
       if(qqual == 0)
 	qqual = bam_get_qual(al);
       if(qqual)
@@ -1131,12 +1124,12 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       // If the caller has requested the variance information and the
       // cigar op consumes both the query and the reference
       // then check for differences in the sequence
-      if( (opt_flag & (AR_Q_DIFF | AR_Q_DEPTH)) &&  cig_type == 3){
+      if( bit_set(opt_flag, AR_Q_DIFF) || bit_set(opt_flag, AR_Q_DEPTH) && cig_type == 3 ){
 	// I added +1 to r_pos and q_pos above; this means that I
 	// need to subtract 1 from all of j here.
 	for(int j=0; j < cig_oplen; ++j){
 	  // Note that qseq may not be stored.
-	  if(qseq && (opt_flag & AR_Q_DIFF) && (j + r_pos) < ref_seq_l ){
+	  if(qseq && (bit_set(opt_flag, AR_Q_DIFF)) && (j + r_pos) < ref_seq_l ){
 	    if(qseq[ q_pos + j - 1] != ref_seq[ r_pos + j -1 ]){
 	      int nuc_info = ((int)ref_seq[r_pos + j -1 ] << 8) | (int)qseq[q_pos+j -1];
 	      if(qqual)
@@ -1146,7 +1139,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 						nuc_info});
 	    }
 	  }
-	  if(opt_flag & AR_Q_DEPTH){
+	  if(bit_set(opt_flag, AR_Q_DEPTH)){
 	    // r_pos is 1 based
 	    int o = (r_pos+j-1) - region_range[0];
 	    if(o >= 0 && o < region_length)
@@ -1154,7 +1147,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 	  }
 	}
       }
-      if( (opt_flag & AR_Q_INTRON_DEPTH) && cig_op == BAM_CREF_SKIP
+      if( (bit_set(opt_flag, AR_Q_INTRON_DEPTH)) && cig_op == BAM_CREF_SKIP
 	  && cig_oplen <= max_intron_length){
 	for(int j=0; j < cig_oplen; ++j){
 	  // r_pos is 1 based
@@ -1181,35 +1174,36 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     push_column(&al_vars, av_column);
     // We should modify the function so that we do not malloc and free for every query
     // sequence.
-    if(opt_flag & AR_AUX_MM){
+    if(bit_set(opt_flag, AR_AUX_MM)){
       parse_MM_string(al, 0, &mm_info, al_count, &al_coord, ops_begin_col, ops_end_col, ref_seq, ref_seq_l);
     }
     // qseq may be 0, but that should be safe to free.
     // We only need to free qseq if we did not store it in the str_array_object
-    if( (opt_flag & AR_Q_SEQ) == 0 )
+    // In fact we should never need to do this.
+    if(!bit_set(opt_flag, AR_Q_SEQ) )
       free(qseq);
     qseq = 0;
   }
   // query ids
   SET_VECTOR_ELT(ret_data, 0, region_r);
   SET_VECTOR_ELT(ret_data, 1, allocVector(STRSXP, query_ids.length));
-  if(opt_flag & AR_CIG)
+  if(bit_set(opt_flag, AR_CIG))
     SET_VECTOR_ELT(ret_data, 7, allocVector(STRSXP, cigars.length));
   // Handle query ids and query sequences at the same time as they have
   // the same length.
-  if(opt_flag & AR_Q_SEQ)
+  if(bit_set(opt_flag, AR_Q_SEQ))
     SET_VECTOR_ELT(ret_data, 4, allocVector(STRSXP, query_ids.length));
-  if(opt_flag & AR_Q_QUAL)
+  if(bit_set(opt_flag, AR_Q_QUAL))
     SET_VECTOR_ELT(ret_data, 8, allocVector(STRSXP, query_ids.length));
   SEXP q_ids_r = VECTOR_ELT( ret_data, 1 );
   SEXP cigars_r = VECTOR_ELT( ret_data, 7 );
   for(size_t i=0; i < query_ids.length; ++i){
     SET_STRING_ELT( q_ids_r, i, mkChar( query_ids.strings[i] ));
-    if(opt_flag & AR_CIG)
+    if(bit_set(opt_flag, AR_CIG))
       SET_STRING_ELT( cigars_r, i, mkChar( cigars.strings[i] ));
-    if(opt_flag & AR_Q_SEQ)
+    if(bit_set(opt_flag, AR_Q_SEQ))
       SET_STRING_ELT( VECTOR_ELT(ret_data, 4), i, mkChar( query_seq.strings[i] ));
-    if(opt_flag & AR_Q_QUAL)
+    if(bit_set(opt_flag, AR_Q_QUAL))
       SET_STRING_ELT( VECTOR_ELT(ret_data, 8), i, mkChar( query_qual.strings[i] ));
   }
   str_array_free(&query_ids);
@@ -1228,12 +1222,12 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   memcpy( INTEGER(VECTOR_ELT(ret_data, 3)), al_coord.data, sizeof(int) * al_coord.nrow * al_coord.col);
   free(al_coord.data);
   // If we have variant data then we need to do something with it before freeing up the used memory.
-  if(opt_flag & AR_Q_DIFF){
+  if(bit_set(opt_flag, AR_Q_DIFF)){
     SET_VECTOR_ELT(ret_data, 5, allocMatrix(INTSXP, var_coord.nrow, var_coord.col));
     setAttrib( VECTOR_ELT(ret_data, 5), R_DimNamesSymbol, var_coord_row_names_r );
     memcpy( INTEGER(VECTOR_ELT(ret_data, 5)), var_coord.data, sizeof(int) * var_coord.nrow * var_coord.col );
   }
-  if(opt_flag & AR_AUX_MM){
+  if(bit_set(opt_flag, AR_AUX_MM)){
     SET_VECTOR_ELT(ret_data, 9, allocMatrix(INTSXP, mm_info.nrow, mm_info.col));
     setAttrib( VECTOR_ELT(ret_data, 9), R_DimNamesSymbol, mm_info_rownames_r);
     memcpy( INTEGER(VECTOR_ELT(ret_data, 9)), mm_info.data, sizeof(int) * mm_info.nrow * mm_info.col);

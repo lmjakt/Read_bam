@@ -303,6 +303,7 @@ uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_i
 //        the behaviour of parse_MM_string
 // r_pos: A pointer whose value should be set to the reference position
 // ops:   A pointer to an i_matrix table containing cigar positions
+//        should also use 1 based offsets.
 // beg:   The first column of the current alignment in the ops table
 // end:   The index of the last column of the current alignment + 1
 // col_i: The current column being parsed. This should be incremented
@@ -312,16 +313,9 @@ uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_i
 // qlen:  The length of the query sequence. Needed for reverse mapping.
 int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 		 size_t beg, size_t end, size_t *col_i, int is_fwd, int32_t q_len){
-  // currently the positions from parse_MM_string are 1 based due
-  // to how they are found;
-  // however, the positions in the ops table are 0 based.
-  // The ops table (since it will be exported to R) should be changed
-  // to 1 - based counting at some point in the future. But for now
-  // changing all of those is a bit much. Instead here we change
-  // the q_pos to a 0 based system.
-  //  q_pos--;
-  // REMOVE THE ABOVE LINE IF ops table changes to a 1 based system.
-  // regression possibility!!
+  // Positions obtained from from parse_MM_string are 1 based due
+  // to how they are defined; the positions in the ops table used to be
+  // 0-based, but are now 1 based to fit in with R semantics.
   // default mapping:
   *r_pos = -1;
   if(beg == end || *col_i == end || *col_i < beg)
@@ -942,7 +936,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   if(opt_flag < 0)
     opt_flag = 0;
   //  if((opt_flag & AR_Q_DIFF) != 0 && (TYPEOF(ref_seq_r) != STRSXP || length(ref_seq_r) != 1))
-  if(bit_set(opt_flag, AR_Q_DIFF) && (TYPEOF(ref_seq_r) != STRSXP || length(ref_seq_r) != 1))
+  if(bit_set(opt_flag, AR_Q_DIFF) && ((TYPEOF(ref_seq_r) != STRSXP) || length(ref_seq_r) != 1))
     error("Sequence divergence requested but ref_seq is not a character vector of length 1 ");
   const char *ref_seq = (TYPEOF(ref_seq_r) == STRSXP) ? CHAR(STRING_ELT(ref_seq_r, 0)) : 0;
   // which returns an int (which we can change to a size_t)
@@ -1110,7 +1104,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     size_t ops_begin_col = al_coord.col;
     for(int i=0; i < cigar_l; ++i){
       // if operation is H also increment the qcig_length
-      if( bam_cigar_type(cigar[i]) & 1 || bam_cigar_op( cigar[i] ) == BAM_CHARD_CLIP )
+      if( (bam_cigar_type(cigar[i]) & 1) || (bam_cigar_op( cigar[i] ) == BAM_CHARD_CLIP) )
 	qcig_length += bam_cigar_oplen( cigar[i] );
       int cig_op = bam_cigar_op(cigar[i]);
       int cig_type = bam_cigar_type(cigar[i]);
@@ -1124,12 +1118,12 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       // If the caller has requested the variance information and the
       // cigar op consumes both the query and the reference
       // then check for differences in the sequence
-      if( bit_set(opt_flag, AR_Q_DIFF) || bit_set(opt_flag, AR_Q_DEPTH) && cig_type == 3 ){
+      if( (bit_set(opt_flag, AR_Q_DIFF) || bit_set(opt_flag, AR_Q_DEPTH)) && cig_type == 3 ){
 	// I added +1 to r_pos and q_pos above; this means that I
 	// need to subtract 1 from all of j here.
 	for(int j=0; j < cig_oplen; ++j){
 	  // Note that qseq may not be stored.
-	  if(qseq && (bit_set(opt_flag, AR_Q_DIFF)) && (j + r_pos) < ref_seq_l ){
+	  if(qseq && (bit_set(opt_flag, AR_Q_DIFF)) && ((j + r_pos) < ref_seq_l) ){
 	    if(qseq[ q_pos + j - 1] != ref_seq[ r_pos + j -1 ]){
 	      int nuc_info = ((int)ref_seq[r_pos + j -1 ] << 8) | (int)qseq[q_pos+j -1];
 	      if(qqual)
@@ -1148,7 +1142,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 	}
       }
       if( (bit_set(opt_flag, AR_Q_INTRON_DEPTH)) && cig_op == BAM_CREF_SKIP
-	  && cig_oplen <= max_intron_length){
+	  && (cig_oplen <= max_intron_length)){
 	for(int j=0; j < cig_oplen; ++j){
 	  // r_pos is 1 based
 	  int o = (r_pos+j-1) - region_range[0];

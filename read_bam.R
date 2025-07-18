@@ -1,6 +1,7 @@
 ## this performs some magic that should not be necessary if created
 ## as a package
-dyn.unload( paste(dirname(sys.frame(1)$ofile), "src/read_bam.so", sep="/") )
+if(is.loaded("load_bam"))
+    dyn.unload( paste(dirname(sys.frame(1)$ofile), "src/read_bam.so", sep="/") )
 dyn.load( paste(dirname(sys.frame(1)$ofile), "src/read_bam.so", sep="/") )
 
 load.bam <- function(bam, bam.index=paste0(bam, ".bai")){
@@ -229,10 +230,10 @@ extract.aux <- function(aux, tags, types){
 ## ops should be a matrix of cigar operations as returned by aligned.region
 ## but note that only:
 ## op, r0, q0, and q1 will be used. Other values can be set to 0
-## qpos should be a matrix containgin the following columns:
+## qpos should be a matrix with the following columns:
 ## query position
-## first row in the ops table for each query
-## last row in the ops table for each query
+## first row in the ops table for each query (1-based)
+## last row in the ops table for each query (1-based)
 ## integer (1 if forward, 0 if reverse)
 ## the query length
 query.to.ref.pos <- function(qpos, ops){
@@ -241,7 +242,8 @@ query.to.ref.pos <- function(qpos, ops){
     if(!is.integer(ops))
         ops <- matrix(as.integer(ops), nrow=nrow(ops), ncol=ncol(ops))
     tmp <- .Call("qpos_to_ref_pos", qpos, t(ops))
-    colnames(tmp) <- c("qpos", "rpos", "op_i")
+    if(!is.null(tmp))
+        colnames(tmp) <- c("qpos", "rpos", "op_i")
     tmp
 }
 

@@ -311,8 +311,13 @@ uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_i
 // is_fwd: 0 if the read has been reverse complemented. In that case
 //         we have to go backwards.
 // qlen:  The length of the query sequence. Needed for reverse mapping.
+// in_clipped: what to do if the query position is in a clipped region
+//             0: return -1
+//             1: return the inferred position
+//             2: return the position of the adjacent match operation.
 int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
-		 size_t beg, size_t end, size_t *col_i, int is_fwd, int32_t q_len){
+		 size_t beg, size_t end, size_t *col_i, int is_fwd, int32_t q_len,
+		 int in_clipped){
   // Positions obtained from from parse_MM_string are 1 based due
   // to how they are defined; the positions in the ops table used to be
   // 0-based, but are now 1 based to fit in with R semantics.
@@ -326,17 +331,27 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   int op = 1;
   int r0 = 3; 
   int q0 = 4;
-  //  int r1 = 5;
+  int r1 = 5;
   int q1 = 6;
   if(is_fwd){
-    while( *col_i < end ){
+    while( *col_i < end && *col_i < ops->col){
       int *coords = ops->data + (*col_i) * ops->nrow;
       if( coords[q0] <= q_pos && coords[q1] > q_pos ){
 	// if the op type is M, (i.e. 0) we have a match.
-	// otherwise we don't have a match.
+	// else consider we have clipped region:
 	if( coords[op] == 0 ){
 	  *r_pos = coords[r0] + (q_pos - coords[q0]);
 	  return(q_pos);
+	}
+	switch(in_clipped){
+	case 1:
+	  *r_pos = coords[r0] + (q_pos - coords[q0]);
+	  break;
+	case 2:
+	  *r_pos = (*col_i) > beg ? coords[r0] : coords[r1];
+	  break;
+	default:
+	  *r_pos = -1;
 	}
 	return(q_pos); // q_pos is within a cigar op
       }
@@ -353,6 +368,10 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
     return(-1);
   }
   while( *col_i >= beg ){
+    if(*col_i >= ops->col){
+      warning("Inappropriate value of *col_i (negative?): %ld", *col_i);
+      return(-1);
+    }
     int *coords = ops->data + (*col_i) * ops->nrow;
     if( coords[q0] <= q_pos && coords[q1] > q_pos ){
       // if the op type is M, (i.e. 0) we have a match.
@@ -361,6 +380,16 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 	// do not add 1 here as it's already added to q_pos above.
 	*r_pos = coords[r0] + (q_pos - coords[q0]);
 	return(q_pos);
+      }
+      switch(in_clipped){
+      case 1:
+	*r_pos = coords[r0] + (q_pos - coords[q0]);
+	break;
+      case 2:
+	*r_pos = (*col_i) > beg ? coords[r0] : coords[r1];
+	break;
+      default:
+	*r_pos = -1;
       }
       return(q_pos);
     }
@@ -514,7 +543,8 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
     // add a column to a table with the following rows:
     // alignment index, query position (seq_i), modification code, mod_n (number of modifications, up to 4), mod_likelihood, ref_pos
     // obtain the refeference position.
-    qpos = query_to_ref( seq_i, &r_pos, cig_ops, ops_beg, ops_end, &current_op, is_fwd, seql );
+    int in_clipped = 0; // set to -1 if operation is not in an M operation
+    qpos = query_to_ref( seq_i, &r_pos, cig_ops, ops_beg, ops_end, &current_op, is_fwd, seql, in_clipped );
     nuc_info = 0;
     char fwd_base = nuc_encoding[ bam_seqi(seq_data, qpos-1) ];
     if(qpos > 0){
@@ -1962,19 +1992,27 @@ SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
 // 3. the index of the cigar operation within which the match was found.
 
 SEXP qpos_to_ref_pos(SEXP qpos_r, SEXP ops_r){
-  if(TYPEOF(qpos_r) != INTSXP || TYPEOF(ops_r) != INTSXP)
-    error("qpos_to_ref_pos: both arguments should be integer matrices");
+  if(TYPEOF(qpos_r) != INTSXP || TYPEOF(ops_r) != INTSXP){
+    warning("qpos_to_ref_pos: both arguments should be integer matrices");
+    return(R_NilValue);
+  }
   SEXP qpos_dim_r = getAttrib(qpos_r, R_DimSymbol);
   SEXP ops_dim_r =  getAttrib(ops_r, R_DimSymbol);
-  if(length(qpos_dim_r) != 2 || length(ops_dim_r) != 2)
-    error("qpos_to_ref_pos: both arguments should be matrices");
+  if(length(qpos_dim_r) != 2 || length(ops_dim_r) != 2){
+    warning("qpos_to_ref_pos: both arguments should be matrices");
+    return(R_NilValue);
+  }
   int *qpos_dim = INTEGER(qpos_dim_r);
   int *ops_dim = INTEGER(ops_dim_r);
-  if(qpos_dim[0] < 1 || qpos_dim[1] != 5)
-    error("The query positions table must have at least one row and exactly five columns");
-  if(ops_dim[0] != 8 || ops_dim[1] < 1)
-    error("The ops table should have exactly 8 rows and at least one column");
-  struct i_matrix ops = init_i_matrix(ops_dim[1], ops_dim[2]);
+  if(qpos_dim[0] < 1 || qpos_dim[1] != 5){
+    warning("The query positions table must have at least one row and exactly five columns");
+    return(R_NilValue);
+  }
+  if(ops_dim[0] != CIG_OPS_RN || ops_dim[1] < 1){
+    warning("The ops table should have exactly 8 rows and at least one column");
+    return(R_NilValue);
+  }
+  struct i_matrix ops = init_i_matrix(ops_dim[0], ops_dim[1]);
   memcpy(ops.data, INTEGER(ops_r), sizeof(int) * ops_dim[0] * ops_dim[1]);
   ops.col=ops_dim[1];
   int *qpos_table = INTEGER(qpos_r);
@@ -1982,24 +2020,28 @@ SEXP qpos_to_ref_pos(SEXP qpos_r, SEXP ops_r){
   int *ops_begin = qpos_table + qpos_dim[0];
   int *ops_end = ops_begin + qpos_dim[0];
   int *is_fwd = ops_end + qpos_dim[0];
-  int *qlen = ops_end + qpos_dim[0];
+  int *qlen = is_fwd + qpos_dim[0];
   int r_pos = -1;
   SEXP ret_data_r = PROTECT( allocMatrix(INTSXP, qpos_dim[0], 3) );
   int *ret_data = INTEGER(ret_data_r);
   int *ret_qpos = ret_data;
   int *ret_rpos = ret_data + qpos_dim[0];
-  int *ret_op_i = ret_data + qpos_dim[0];
+  int *ret_op_i = ret_rpos + qpos_dim[0];
+  int in_clipped = 2; // try to assign to the adjacent region if position is not in an M operation
   for(int i=0; i < qpos_dim[0]; ++i){
-    if(ops_begin[i] < 0 || ops_begin[i] > ops_end[i] || ops_end[i] >= ops_dim[2]){
+    if(ops_begin[i] < 0 || ops_begin[i] > ops_end[i] || ops_end[i] > ops_dim[1]){
       warning("Inappropriate ops_begin or ops_end values: %d  %d skipping", ops_begin[i], ops_end[i]);
       continue;
     }
-    size_t col_i = (size_t)ops_begin[i];
-    int r = query_to_ref(qpos[i], &r_pos, &ops, ops_begin[i], ops_end[i],
-			 &col_i, is_fwd[i], qlen[i]);
+    // ops_begin[i]-1, because the table has been passed from R.
+    // in R, the end is usually the last index, rather than index + 1
+    // Hence we do not need to subtract from ops_end[i]
+    size_t col_i = is_fwd[i] ? (size_t)ops_begin[i]-1 : (size_t)ops_end[i]-1;
+    int r = query_to_ref(qpos[i], &r_pos, &ops, ops_begin[i]-1, ops_end[i],
+			 &col_i, is_fwd[i], qlen[i], in_clipped);
     ret_qpos[i] = r;
     ret_rpos[i] = r_pos;
-    ret_op_i[i] = (int)col_i;
+    ret_op_i[i] = (int)col_i + 1;
   }
   free( ops.data );
   UNPROTECT(1);

@@ -1025,9 +1025,9 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   //  SEXP dimNames_r = PROTECT(mk_rownames( rownames, 8 ));
   // We also want to return more basic information about the alignments eg.
   // flag, pos, mapq, qlen and tlen
-  struct i_matrix al_vars = init_i_matrix( 8, init_size );
-  int av_column[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  SEXP al_var_dimnames = PROTECT( mk_rownames((const char*[]){"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen", "qclen"}, 8));
+  struct i_matrix al_vars = init_i_matrix( AR_AL_RN, init_size );
+  SEXP al_var_dimnames = PROTECT( mk_rownames(ar_al_rownames, AR_AL_RN));
+  //  SEXP al_var_dimnames = PROTECT( mk_rownames((const char*[]){"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen", "qclen"}, 8));
   char *qseq = 0; // use as a temporary variable to hold the address of the query sequence
   // Like qseq, but for the quality values. These can be obtained using
   // bam_get_qual() which returns a pointer to the qual data
@@ -1084,17 +1084,8 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     uint32_t *cigar = bam_get_cigar(al);
     int32_t cigar_l = al->core.n_cigar;
     int r_pos = 1 + (int)al->core.pos;
+    int r_pos_0 = r_pos;
     int q_pos = 1;
-    // We don't actually need the av_column; we could simply use an anonymous
-    // array.
-    av_column[0] = (int)al->core.flag;
-    av_column[1] = r_pos;
-    // 2, 3, 4 are r.end, q.beg, q.end respectively
-    av_column[5] = (int)al->core.qual;
-    av_column[6] = (int)al->core.l_qseq;
-    // It's not actually clear what isize is? Seems to be set to 0
-    // a lot of the time.. set to qcig_length instead
-    // av_column[7] = (int)al->core.isize;
     int q_beg=-1;
     int q_end=0;
     // calculate the true query length from the cigar string
@@ -1161,11 +1152,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       push_column( &al_coord, (int[]){al_count, cig_op, cig_type, ref_0, q_0, ref_1, q_1, cig_oplen} );
     }
     size_t ops_end_col = al_coord.col;
-    av_column[2] = r_pos;
-    av_column[3] = q_beg;
-    av_column[4] = q_end;
-    av_column[7] = qcig_length;
-    push_column(&al_vars, av_column);
+    push_column(&al_vars, (int[AR_AL_RN]){(int)al->core.flag, r_pos_0, r_pos, q_beg, q_end, (int)al->core.qual, (int)al->core.l_qseq, qcig_length});
     // We should modify the function so that we do not malloc and free for every query
     // sequence.
     if(bit_set(opt_flag, AR_AUX_MM)){
@@ -1944,6 +1931,80 @@ SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
   return(ret_data);
 }
 
+// Make use of query_to_ref to map from positions in unaligned query
+// sequences to to reference positions.
+// Arguments:
+// q_pos: a table containing the following columns:
+//   1. query positions; [sorted or not?]
+//   2. first row in an ops table for the alignment
+//   3. last row in an ops table for the alignment
+//   4. an integer value specifying direction (0 = reverse)
+//   5. The query length
+// ops: an ops table containing usual rows of the usual number of rows:
+//   1. al.i
+//   2. op
+//   3. type
+//   4. r0
+//   5. q0
+//   6. r1
+//   7. q1
+//   8. op.l
+// Not all these values will be used, but query_to_ref expects an i_matrix of these
+// dimensions. And it's easier to make one in R than to do it here.
+// Specifically one can simply return a table with only match operations (these need
+// to be 0)
+//
+// Returns: For each query position
+// A matrix containing the following columns:
+// 1. query position (a copy)
+// 2. reference position
+// 3. the index of the cigar operation within which the match was found.
+
+SEXP qpos_to_ref_pos(SEXP qpos_r, SEXP ops_r){
+  if(TYPEOF(qpos_r) != INTSXP || TYPEOF(ops_r) != INTSXP)
+    error("qpos_to_ref_pos: both arguments should be integer matrices");
+  SEXP qpos_dim_r = getAttrib(qpos_r, R_DimSymbol);
+  SEXP ops_dim_r =  getAttrib(ops_r, R_DimSymbol);
+  if(length(qpos_dim_r) != 2 || length(ops_dim_r) != 2)
+    error("qpos_to_ref_pos: both arguments should be matrices");
+  int *qpos_dim = INTEGER(qpos_dim_r);
+  int *ops_dim = INTEGER(ops_dim_r);
+  if(qpos_dim[0] < 1 || qpos_dim[1] != 5)
+    error("The query positions table must have at least one row and exactly five columns");
+  if(ops_dim[0] != 8 || ops_dim[1] < 1)
+    error("The ops table should have exactly 8 rows and at least one column");
+  struct i_matrix ops = init_i_matrix(ops_dim[1], ops_dim[2]);
+  memcpy(ops.data, INTEGER(ops_r), sizeof(int) * ops_dim[0] * ops_dim[1]);
+  ops.col=ops_dim[1];
+  int *qpos_table = INTEGER(qpos_r);
+  int *qpos = qpos_table;
+  int *ops_begin = qpos_table + qpos_dim[0];
+  int *ops_end = ops_begin + qpos_dim[0];
+  int *is_fwd = ops_end + qpos_dim[0];
+  int *qlen = ops_end + qpos_dim[0];
+  int r_pos = -1;
+  SEXP ret_data_r = PROTECT( allocMatrix(INTSXP, qpos_dim[0], 3) );
+  int *ret_data = INTEGER(ret_data_r);
+  int *ret_qpos = ret_data;
+  int *ret_rpos = ret_data + qpos_dim[0];
+  int *ret_op_i = ret_data + qpos_dim[0];
+  for(int i=0; i < qpos_dim[0]; ++i){
+    if(ops_begin[i] < 0 || ops_begin[i] > ops_end[i] || ops_end[i] >= ops_dim[2]){
+      warning("Inappropriate ops_begin or ops_end values: %d  %d skipping", ops_begin[i], ops_end[i]);
+      continue;
+    }
+    size_t col_i = (size_t)ops_begin[i];
+    int r = query_to_ref(qpos[i], &r_pos, &ops, ops_begin[i], ops_end[i],
+			 &col_i, is_fwd[i], qlen[i]);
+    ret_qpos[i] = r;
+    ret_rpos[i] = r_pos;
+    ret_op_i[i] = (int)col_i;
+  }
+  free( ops.data );
+  UNPROTECT(1);
+  return( ret_data_r );
+}
+
 /////// This function got too complicated; see option below for alternative strategy ///
 // merge_transcripts
 // given an ops table with columns:
@@ -2277,6 +2338,7 @@ static const R_CallMethodDef callMethods[] = {
   {"nuc_table", (DL_FUNC)&nuc_table, 0},
   {"bam_flag", (DL_FUNC)&bam_flag, 1},
   {"extract_aux_tags", (DL_FUNC)&extract_aux_tags, 3},
+  {"qpos_to_ref_pos", (DL_FUNC)&qpos_to_ref_pos, 2},
   {"load_bcf", (DL_FUNC)&load_bcf, 2},
   {"bcf_read_n", (DL_FUNC)&bcf_read_n, 3},
   {"arrange_lines", (DL_FUNC)&arrange_lines, 2},

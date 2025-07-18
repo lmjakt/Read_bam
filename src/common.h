@@ -33,6 +33,11 @@
 
 // The following define the number of rows  and their names in tables returned by
 // aligned_region and sam_read_n
+
+// The number of rows in an alignments table ($al)
+#define AR_AL_RN 8
+static const char* ar_al_rownames[AR_AL_RN] = {"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen", "qclen"};
+
 // The number of rows in an cigar operations table
 #define CIG_OPS_RN 8
 #define OPS_INIT_SIZE 256

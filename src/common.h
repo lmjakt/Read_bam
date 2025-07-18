@@ -35,8 +35,8 @@
 // aligned_region and sam_read_n
 
 // The number of rows in an alignments table ($al)
-#define AR_AL_RN 8
-static const char* ar_al_rownames[AR_AL_RN] = {"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen", "qclen"};
+#define AR_AL_RN 10
+static const char* ar_al_rownames[AR_AL_RN] = {"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen", "qclen", "ops.0", "ops.1"};
 
 // The number of rows in an cigar operations table
 #define CIG_OPS_RN 8

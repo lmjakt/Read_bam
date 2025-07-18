@@ -1152,7 +1152,8 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       push_column( &al_coord, (int[]){al_count, cig_op, cig_type, ref_0, q_0, ref_1, q_1, cig_oplen} );
     }
     size_t ops_end_col = al_coord.col;
-    push_column(&al_vars, (int[AR_AL_RN]){(int)al->core.flag, r_pos_0, r_pos, q_beg, q_end, (int)al->core.qual, (int)al->core.l_qseq, qcig_length});
+    push_column(&al_vars, (int[AR_AL_RN]){(int)al->core.flag, r_pos_0, r_pos, q_beg, q_end, (int)al->core.qual,
+					    (int)al->core.l_qseq, qcig_length, 1+(int)ops_begin_col, (int)ops_end_col});
     // We should modify the function so that we do not malloc and free for every query
     // sequence.
     if(bit_set(opt_flag, AR_AUX_MM)){

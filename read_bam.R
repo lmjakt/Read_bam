@@ -34,6 +34,21 @@ clear.bam.iterator <- function(bam.ptr){
     .Call("clear_iterator", bam.ptr)
 }
 
+## Note opt.flag=1L causes the index to parse the cigar data in
+## order to find the reference end and the query start and end
+## positions. It turns out that it doesn't make much difference
+## to the speed of the index building. So it's on by default.
+build.index <- function(bam.ptr, region, opt.flag=1L){
+    .Call("build_query_index", bam.ptr, region, as.integer(opt.flag))
+}
+
+query.pos <- function(bam.ptr, query.ids){
+    tmp <- .Call("query_positions", bam.ptr, query.ids)
+    tmp <- data.frame(query=query.ids[tmp[[1]]], query.i=tmp[[1]], t(tmp[[2]]))
+    tmp$target.id <- tmp$target.id + 1
+    tmp
+}
+
 ## opt.flag is the bitwise OR of bits:
 ## 1 return seq_data as a character vector array
 ## 2 return positions that differ from reference; requires that ref.seq is specified

@@ -4,6 +4,7 @@
 #include <htslib/sam.h>
 #include <htslib/vcf.h>
 #include "common.h"
+#include "qname_hash.h"
 
 // This provides acces to bam / sam and bcf / vcf files.
 
@@ -64,6 +65,12 @@ struct bam_ptrs {
   hts_idx_t *index;
   // also include an iterator
   hts_itr_t *b_itr;
+  // qname_hash is used to index query names to
+  // alignment positions. It is a (string) ->
+  // vector index; as such we need to make sure that
+  // alignments to individual scaffolds are only indexed once.
+  khash_t(sam_id_h) *qname_hash;
+  khash_t(int) *indexed_targets;
 };
 // that will be held as an external pointer
 // Which should be cleaned up
@@ -135,6 +142,10 @@ static void finalise_bam_ptrs(SEXP ptr_r){
     hts_idx_destroy( ptr->index );
   if( ptr->b_itr )
     hts_itr_destroy( ptr->b_itr );
+  if(ptr->qname_hash)
+    clear_sam_hash(ptr->qname_hash);
+  if(ptr->indexed_targets)
+    kh_destroy(int, ptr->indexed_targets);
   // It is _not_ safe to: 
   //  free( ptr->sam ); 
   // and there is no hts_file_destroy / sam_file_destroy
@@ -731,7 +742,9 @@ SEXP load_bam(SEXP bam_file_r, SEXP index_file_r){
   ptr->sam = sam;
   ptr->header = header;
   ptr->index = index;
-  ptr->b_itr = 0;  // to set an iterator we have to make a range query.. 
+  ptr->b_itr = 0;  // to set an iterator we have to make a range query..
+  ptr->qname_hash = 0; // holds a hash of query name -> list of alignment positions.
+  ptr->indexed_targets = 0;
   // create an external pointer with suitable tag and protect?
   SEXP tag = PROTECT( allocVector(STRSXP, 1) );
   SET_STRING_ELT( tag, 0, mkChar("bam_ptrs") );
@@ -901,6 +914,136 @@ int read_next_entry( struct bam_ptrs *bam, bam1_t *b){
   if(bam->b_itr)
     return( sam_itr_next(bam->sam, bam->b_itr, b) );
   return( sam_read1(bam->sam, bam->header, b) );
+}
+
+// Single region only supported at first.
+// if( opt_flag & 1 ) ==> parse cigar data.
+SEXP build_query_index(SEXP bam_ptr_r, SEXP region_r, SEXP opt_flag_r){
+  struct bam_ptrs *bam = extract_bam_ptr(bam_ptr_r);
+  if(!bam){
+    // we could be clever here and try to recreate from the protect information
+    // but we should think carefully about this
+    error("External pointer is NULL");
+  }
+  if(TYPEOF(region_r) != STRSXP || length(region_r) < 1)
+    error("region_r should be a character vector of positive length");
+  if(TYPEOF(opt_flag_r) != INTSXP || length(opt_flag_r) != 1)
+    error("opt_flag_r should be an integer vector containing one integer");
+  int opt_flag = INTEGER(opt_flag_r)[0];
+
+  if(!bam->index){
+    error("External pointer does not contain an index structure");
+  }
+  const char *region = CHAR(STRING_ELT(region_r, 0));
+  int target_id = sam_hdr_name2tid(bam->header, region);
+  if(target_id < 0){
+    warning("Unable to find target id for specified region: %s", region);
+    return(R_NilValue);
+  }
+  int target_length = target_id < bam->header->n_targets ? bam->header->target_len[target_id] : 0;
+  if(!target_length){
+    warning("0 target length for specified region: %s", region);
+    return(R_NilValue);
+  }
+  if(bam->qname_hash == 0){
+    bam->qname_hash = init_sam_hash();
+  }
+  if(bam->qname_hash == 0)
+    error("Unable to initialise a query name hash");
+
+  // also check if we have the indexed_targets hash:
+  if(bam->indexed_targets == 0)
+    bam->indexed_targets = kh_init(int);
+
+  if(bam->indexed_targets == 0)
+    error("Unable to initialse a hash of indexed targets");
+
+  int khash_ret;
+  kh_put(int, bam->indexed_targets, target_id, &khash_ret);
+  if(khash_ret == -1){
+    warning("Failed to insert target id into bam->indexed_targets for: %d", target_id);
+    return(R_NilValue);
+  }
+  if(khash_ret == 0){
+    warning("Target %d already indexed. returning", target_id);
+    return(R_NilValue);
+  }
+  
+  hts_itr_t *b_itr = sam_itr_queryi(bam->index, target_id, 0, target_length);
+  bam1_t *al = bam_init1();
+  int ret;
+  int count = 0;
+  while((ret=sam_itr_next(bam->sam, b_itr, al)) >= 0){
+    int flag = al->core.flag;
+    int rpos_0 = 1 + (int)al->core.pos;
+    int rpos_1 = rpos_0;
+    int qpos_0 = 1;
+    int qpos_1 = 1;
+    int q_length = al->core.l_qseq;
+    if((opt_flag & 1) && (al->core.n_cigar > 0)){
+      uint32_t *cigar = bam_get_cigar(al);
+      // 5 XOR [4, 5] --> 0, 1; this tests for BAM_CSOFT_CLIP and BAM_CHARD_CLIP
+      qpos_0 += (bam_cigar_op(cigar[0]) ^ 5) < 2 ? bam_cigar_oplen( cigar[0] ) : 0;
+      // If the first cigar op is hard clip, then it _should_ guarantee the presence
+      // of a second cigar op; hence we should not need to check the cigar length here.
+      qpos_0 += (bam_cigar_op(cigar[0]) == BAM_CHARD_CLIP && bam_cigar_op(cigar[1]) == BAM_CSOFT_CLIP) ?
+	bam_cigar_oplen(cigar[1]) : 0;
+      for(int i=0; i < al->core.n_cigar; ++i){
+	rpos_1 += bam_cigar_type(cigar[i]) & CIG_OP_TP_RC ? bam_cigar_oplen( cigar[i] ) : 0;
+	qpos_1 += bam_cigar_type(cigar[i]) & CIG_OP_TP_QC ? bam_cigar_oplen( cigar[i] ) : 0;
+      }
+    }
+    srh_add_element(bam->qname_hash, bam_get_qname(al),
+		    init_sam_record(target_id, rpos_0, rpos_1, flag, qpos_0, qpos_1, q_length));
+    ++count;
+  }
+  SEXP ret_value = PROTECT(allocVector(INTSXP, 1));
+  INTEGER(ret_value)[0] = count;
+  UNPROTECT(1);
+  return(ret_value);
+}
+
+SEXP query_positions(SEXP bam_ptr_r, SEXP query_ids_r){
+  struct bam_ptrs *bam = extract_bam_ptr(bam_ptr_r);
+  if(!bam){
+    // we could be clever here and try to recreate from the protect information
+    // but we should think carefully about this
+    error("External pointer is NULL");
+  }
+  if(!bam->qname_hash)
+    error("Query positions have not been indexed");
+
+  if(TYPEOF(query_ids_r) != STRSXP || length(query_ids_r) < 1)
+    error("query_ids_r should be a character vector of positive length");
+
+  // lets try to make use of a kvec_t array here. It's already defined
+  // in qname_hash.h
+  sam_record_list query_pos;
+  kv_init(query_pos);
+  kvec_t(int) query_ids;
+  kv_init(query_ids);
+  for(int i=0; i < length(query_ids_r); ++i){
+    sam_record_list* als = srh_get( bam->qname_hash, CHAR(STRING_ELT(query_ids_r, i)) );
+    if(als){
+      // kv_copy(sam_record, query_pos, *als);
+      for(int j=0; j < als->n; ++j){
+     	kv_push(sam_record, query_pos, kv_a(sam_record, *als, j));
+	kv_push(int, query_ids, i+1);
+      }
+    } 
+  }
+  
+  SEXP ret = PROTECT(allocVector(VECSXP, 2));
+  SET_VECTOR_ELT(ret, 0, allocVector(INTSXP, query_ids.n));
+  SET_VECTOR_ELT(ret, 1, allocMatrix(INTSXP, SAM_RECORD_FIELDS_N, query_pos.n));
+  SEXP row_names = mk_rownames( sam_record_field_names, SAM_RECORD_FIELDS_N );
+  setAttrib(VECTOR_ELT(ret, 1), R_DimNamesSymbol, row_names);
+  memcpy( INTEGER(VECTOR_ELT(ret, 0)), query_ids.a, sizeof(int) * query_ids.n );
+  memcpy( INTEGER(VECTOR_ELT(ret, 1)), query_pos.a, sizeof(sam_record) * query_pos.n );
+  kv_destroy(query_pos);
+  kv_destroy(query_ids);
+  UNPROTECT(1);
+  return(ret);
 }
 
 // region_r: the region as:  ref_name:beg-end
@@ -2372,6 +2515,8 @@ static const R_CallMethodDef callMethods[] = {
   {"load_bam", (DL_FUNC)&load_bam, 2},
   {"set_iterator", (DL_FUNC)&set_iterator, 3},
   {"clear_iterator", (DL_FUNC)&clear_iterator, 1},
+  {"build_query_index", (DL_FUNC)&build_query_index, 3},
+  {"query_positions", (DL_FUNC)&query_positions, 2},
   {"alignments_region", (DL_FUNC)&alignments_region, 9},
   {"count_region_alignments", (DL_FUNC)&count_region_alignments, 5},
   {"sam_read_n", (DL_FUNC)&sam_read_n, 4},

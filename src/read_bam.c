@@ -1121,8 +1121,6 @@ SEXP query_positions(SEXP bam_ptr_r, SEXP query_ids_r){
 //     bit 6 = return mate information
 //     bit 7 = parse MM auxiliary string.
 //     bit 8 = return intron depth
-//  If ref_seq_r AND (flag_filter & 3 == 3) then return all positions where
-//  there is a nucleotide difference
 //  min_mq_r : A minimum mapping quality
 //  min_ql_r : A minimum query length, taken from bam1_core_t.qlen
 //             which does not necessarily equate to the read length
@@ -1153,7 +1151,6 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     warning("Unable to find target id for specified region: %s", region);
     return(R_NilValue);
   }
-  
   if(TYPEOF(flag_filter_r) != INTSXP || length(flag_filter_r) != 2)
     error("flag_filter should be an integer vector of length 2");
   if(TYPEOF(opt_flag_r) != INTSXP || length(opt_flag_r) != 1)
@@ -1164,7 +1161,8 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // cig_opt will be passed to cigar_to_table()
   // the default values are all 0s
   struct cigar_parse_options cig_opt = init_cigar_parse_options();
-
+  cig_opt.depth_begin = region_range[0];
+  
   if(bit_set(opt_flag, AR_Q_DIFF) && ((TYPEOF(ref_seq_r) != STRSXP) || length(ref_seq_r) != 1))
     error("Sequence divergence requested but ref_seq is not a character vector of length 1 ");
   const char *ref_seq = (TYPEOF(ref_seq_r) == STRSXP) ? CHAR(STRING_ELT(ref_seq_r, 0)) : 0;
@@ -1202,7 +1200,6 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     memset( seq_depth, 0, sizeof(int) * region_length );
     cig_opt.depth = seq_depth;
     cig_opt.depth_l = region_length;
-    cig_opt.depth_begin = region_range[0];
   }
   // And similarly for the intron depth:
   int max_intron_length = MAX_INTRON_L; // unless set by user
@@ -1219,13 +1216,12 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     memset( intron_depth, 0, sizeof(int) * region_length );
     cig_opt.i_depth = intron_depth;
     cig_opt.depth_l = region_length;
-    cig_opt.depth_begin = region_range[0];
   }
   // We use sam_itr_queryi, so that we can specify the region
   // numerically thus also allowing the same function to return the sequence depth for the region.
   hts_itr_t *b_itr = sam_itr_queryi(bam->index, target_id, region_range[0], region_range[1]);
-  // hts_itr_destroy( ) not called on this anywhere: suggests we have a memory leak.
-  // previously I used the string version:
+  // hts_itr_destroy( ) not called on this anywhere
+  // The string version used previously:
   //  hts_itr_t *b_itr = sam_itr_querys(bam->index, bam->header, region);
   bam1_t *al = bam_init1();
   int r=0;
@@ -1242,14 +1238,10 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   struct str_array cigars = init_str_array(init_size);
   struct cigar_string cigars_string = cigar_string_init(init_size);
   
-  //  const char* rownames[8] = {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
-  // struct i_matrix al_coord = init_i_matrix( 8, init_size );
-  // rownames are in cig_ops_rownames
   struct i_matrix al_coord = init_i_matrix( CIG_OPS_RN, init_size );
   SEXP al_coord_rownames_r = PROTECT(mk_rownames( cig_ops_rownames, CIG_OPS_RN ));
 
   // For sequence variants in the reads:
-  //  const char* var_coord_row_names[] = {"seq.id", "r.pos", "q.pos", "nuc"};
   struct i_matrix var_coord = init_i_matrix( 4, init_size );
   SEXP var_coord_row_names_r = PROTECT(mk_rownames( (const char*[]){"al.i", "r.pos", "q.pos", "nuc"}, 4 ));
   if(bit_set(opt_flag, AR_Q_DIFF))
@@ -1260,20 +1252,17 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   if(bit_set(opt_flag, AR_AUX_MM))
     cig_opt.mm_info = &mm_info;
   
-  //  int column[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  // dimNames_r used to set rownames for the main return table
-  //  SEXP dimNames_r = PROTECT(mk_rownames( rownames, 8 ));
-  // We also want to return more basic information about the alignments eg.
-  // flag, pos, mapq, qlen and tlen
+  // A structure holding: flag, r.beg, r.end, q.beg, q.end, mqual, qlen, qclen, ops.0, ops.1
   struct i_matrix al_vars = init_i_matrix( AR_AL_RN, init_size );
   SEXP al_var_dimnames = PROTECT( mk_rownames(ar_al_rownames, AR_AL_RN));
-  //  SEXP al_var_dimnames = PROTECT( mk_rownames((const char*[]){"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen", "qclen"}, 8));
-  char *qseq = 0; // use as a temporary variable to hold the address of the query sequence
+
+  // qqual and qseq are a bit weird; memory may be allocated, but if so, the pointers will be
+  // held in a str_array object and will be deallocated after these have been copied to the
+  // return data structure. 
+  char *qseq = 0; 
   // Like qseq, but for the quality values. These can be obtained using
   // bam_get_qual() which returns a pointer to the qual data
   //                of length bam->core.l_qseq
-  // Currently there is no option to return the quality scores; but I can add qualities
-  // at mismatched position without modifying any data structures. I
   unsigned char *qqual=0; //
   
   while((r=sam_itr_next(bam->sam, b_itr, al)) >= 0){

@@ -432,6 +432,11 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 // query sequences and must be checked.
 // query_to_ref(cigar, cigar_pos)
 // that moves to the next cigar position when needed to might make the most sense
+
+// NOTES: I should be able to remove the cig_ops, ops_begin, ops_end arguments
+// as I can use b->core.n_cigar instead. However, this function calls query_to_ref
+// and I would need to refactor that function as well.
+// ref_seq can b 0.
 void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
 		     struct i_matrix *cig_ops, size_t ops_beg, size_t ops_end,
 		     const char *ref_seq, size_t ref_seq_l){
@@ -560,9 +565,9 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
     char fwd_base = nuc_encoding[ bam_seqi(seq_data, qpos-1) ];
     if(qpos > 0){
       nuc_info |= (((uint32_t)base) << 24);
-      if(seq_qual && qpos <= seql)
+      if(seq_qual && (size_t)qpos <= seql)
 	nuc_info |= (((uint32_t)seq_qual[ qpos - 1 ]) << 16);
-      if(ref_seq && r_pos <= ref_seq_l){
+      if(ref_seq && (size_t)r_pos <= ref_seq_l){
 	nuc_info |= (((uint32_t)ref_seq[ r_pos - 1 ]) << 8);
 	nuc_info |= (ref_seq[r_pos-1] == fwd_base);
       }
@@ -631,6 +636,29 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   return;
 }
 
+// depth: if not NULL, pointer for sequence depth
+// i_depth; intron_depth
+// depth_l: length of depth and i_depth arrays
+struct cigar_parse_options {
+  int *depth, *i_depth;
+  int max_intron_length;
+  size_t depth_begin;
+  size_t depth_l;
+  const char *qseq;
+  const char *qqual;
+  size_t qseq_l;
+  const char *rseq;
+  size_t rseq_l;
+  struct i_matrix *diff, *mm_info;
+};
+
+// this defaults to a struct with all elements set to 0;
+struct cigar_parse_options init_cigar_parse_options(){
+  struct cigar_parse_options cpo;
+  memset( &cpo, 0, sizeof(struct cigar_parse_options) );
+  return(cpo);
+}
+
 // Parse the cigar data and extend:
 // A cigar operations table containing the operations, their lengths and
 //     the query and reference positions (i.e. how they align)
@@ -650,31 +678,34 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
 // Note that this implies that parsing MM / ML requires that the cigar is
 // parsed.
 //
-// WARNING: this function counts from 0, not 1; this is different from
-//          what I did in aligned_region.
-// It is to make it easier to reuse the data within this data.
-// Using this, I should be able to subset sequences 
-void cigar_to_table(bam1_t *al, int al_i, struct i_matrix *al_coord,
+void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
+		    struct i_matrix *al_coord,
 		    int *qcig_length, int *q_beg, int *q_end,
-		    size_t *ops_beg, size_t *ops_end){
-  // rows are: {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
-  int column[CIG_OPS_RN] = {0, 0, 0, 0, 0, 0, 0, 0};
-  column[0] = al_i;
-  uint32_t *cigar = bam_get_cigar(al);
-  int32_t cigar_l = al->core.n_cigar;
+		    size_t *ops_beg, size_t *ops_end,
+		    struct cigar_parse_options *opts){
   // use a 1-based coordinate system instead of a 0-based one
-  // for consistency with R and aligned_regions(_
-  int r_pos = 1 + (int)al->core.pos;
+  // for consistency with R and aligned_regions
+  *r_pos = 1 + (int)al->core.pos;
   int q_pos = 1;
   *qcig_length = 0;
   *q_beg = 1;
   *q_end = 0;
-  // if we have hard clipping set q_beg appropriately:
-  // we should define MACROs to replace the numbers here.
-  if(cigar_l && bam_cigar_op(cigar[0]) == BAM_CHARD_CLIP)
-    *q_beg = bam_cigar_oplen(cigar[0]);
 
+  uint32_t *cigar = bam_get_cigar(al);
+  int32_t cigar_l = al->core.n_cigar;
+  if(cigar_l < 1)
+    return;
+  // if we have clipping set q_beg appropriately:
+  // 5 XOR [4, 5] --> 0, 1; this tests for BAM_CSOFT_CLIP and BAM_CHARD_CLIP
+  *q_beg += (bam_cigar_op(cigar[0]) ^ 5) < 2 ? bam_cigar_oplen( cigar[0] ) : 0;
+  if(bam_cigar_op(cigar[0]) == BAM_CHARD_CLIP){
+    // If the first cigar op is hard clip, then it _should_ guarantee the presence
+    // of a second cigar op; hence we should not need to check the cigar length here.
+    *q_beg += bam_cigar_op(cigar[1]) == BAM_CSOFT_CLIP ? bam_cigar_oplen(cigar[1]) : 0;
+  }
+  
   *ops_beg = al_coord->col;
+  int r0, q0;
   for(int i=0; i < cigar_l; ++i){
     // if operation is H also increment the qcig_length
     int type = bam_cigar_type(cigar[i]);
@@ -682,20 +713,42 @@ void cigar_to_table(bam1_t *al, int al_i, struct i_matrix *al_coord,
     int op_length = bam_cigar_oplen( cigar[i] );
     if( type & 1 || op == BAM_CHARD_CLIP )
       *qcig_length += op_length;
-    column[1] = op;
-    column[2] = type;
-    column[3] = r_pos;
-    column[4] = q_pos;
+    r0 = *r_pos;
+    q0 = q_pos;
     q_pos += type & 1 ? op_length : 0;
-    r_pos += type & 2 ? op_length : 0;
-    if(type & 2)
+    *r_pos += type & 2 ? op_length : 0;
+    if(op == BAM_CMATCH)
       *q_end = q_pos;
-    column[5] = r_pos;
-    column[6] = q_pos;
-    column[7] = op_length;
-    push_column( al_coord, column );
+    push_column( al_coord, (int[]){ al_i, op, type, r0, q0, *r_pos, q_pos, op_length } );
+    if((opts->depth || opts->diff) && op == BAM_CMATCH){
+      // the r0 and q0 coordinates are 1 based; we need to adjust for this
+      for(int j=0; j < op_length; ++j){
+	size_t r = r0 + j - 1;
+	size_t q = q0 + j - 1;
+	size_t d_o = r - opts->depth_begin;
+	if(d_o < opts->depth_l) ++opts->depth[d_o];
+	// Here I assume that if qseq_l is set then qseq will also be set
+	// I leave qqual as an option as it will just mean quality = 0
+	if(opts->diff && opts->qseq && q < opts->qseq_l
+	   && r < opts->rseq_l && (opts->qseq[q] != opts->rseq[r])){
+	  uint32_t qq = opts->qqual ? (opts->qqual[q] << 16) : 0;
+	  int nuc_info = (int)( ((uint32_t)opts->rseq[r] << 8)) | ((uint32_t)opts->qseq[q]) | qq;
+	  push_column( opts->diff, (int[]){ al_i, r+1, q+1, nuc_info });
+	}
+      }
+    }
+    if(opts->i_depth && op == BAM_CREF_SKIP & op_length <= opts->max_intron_length){
+      for(int j=0; j < op_length; ++j){
+	size_t d_o = r0 + j - (1 + opts->depth_begin);
+	if(d_o < opts->depth_l)
+	  ++opts->i_depth[d_o];
+      }
+    }
   }
   *ops_end = al_coord->col;
+  if(opts->mm_info){
+    parse_MM_string(al, 0, opts->mm_info, al_i, al_coord, *ops_beg, *ops_end, opts->rseq, opts->rseq_l);
+  }
 }
 
 // A convenience function; creates a VECSXP containing a STRSXP in the first
@@ -1108,13 +1161,17 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   int opt_flag = asInteger(opt_flag_r);
   if(opt_flag < 0)
     opt_flag = 0;
-  //  if((opt_flag & AR_Q_DIFF) != 0 && (TYPEOF(ref_seq_r) != STRSXP || length(ref_seq_r) != 1))
+  // cig_opt will be passed to cigar_to_table()
+  // the default values are all 0s
+  struct cigar_parse_options cig_opt = init_cigar_parse_options();
+
   if(bit_set(opt_flag, AR_Q_DIFF) && ((TYPEOF(ref_seq_r) != STRSXP) || length(ref_seq_r) != 1))
     error("Sequence divergence requested but ref_seq is not a character vector of length 1 ");
   const char *ref_seq = (TYPEOF(ref_seq_r) == STRSXP) ? CHAR(STRING_ELT(ref_seq_r, 0)) : 0;
   // which returns an int (which we can change to a size_t)
   size_t ref_seq_l = (size_t)(ref_seq != 0) ? LENGTH(STRING_ELT(ref_seq_r, 0)) : 0;
-  //  size_t ref_seq_l = strlen(ref_seq); // this is potentiall rather slow, but necessary
+  cig_opt.rseq = ref_seq;
+  cig_opt.rseq_l = ref_seq_l;
   int *flag_filter_rp = INTEGER(flag_filter_r);
   // default values; no filtering
   uint32_t flag_filter[2] = {0, 0};
@@ -1143,6 +1200,9 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     SET_VECTOR_ELT( ret_data, 6, allocVector(INTSXP, region_length) );
     seq_depth = INTEGER(VECTOR_ELT(ret_data, 6));
     memset( seq_depth, 0, sizeof(int) * region_length );
+    cig_opt.depth = seq_depth;
+    cig_opt.depth_l = region_length;
+    cig_opt.depth_begin = region_range[0];
   }
   // And similarly for the intron depth:
   int max_intron_length = MAX_INTRON_L; // unless set by user
@@ -1152,10 +1212,14 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     warning("max_intron_length set to default value (%d)", max_intron_length);
   }
   int *intron_depth = 0;
+  cig_opt.max_intron_length = max_intron_length;
   if(bit_set(opt_flag, AR_Q_INTRON_DEPTH)){
     SET_VECTOR_ELT( ret_data, 10, allocVector(INTSXP, region_length));
     intron_depth = INTEGER(VECTOR_ELT(ret_data, 10));
     memset( intron_depth, 0, sizeof(int) * region_length );
+    cig_opt.i_depth = intron_depth;
+    cig_opt.depth_l = region_length;
+    cig_opt.depth_begin = region_range[0];
   }
   // We use sam_itr_queryi, so that we can specify the region
   // numerically thus also allowing the same function to return the sequence depth for the region.
@@ -1188,10 +1252,13 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   //  const char* var_coord_row_names[] = {"seq.id", "r.pos", "q.pos", "nuc"};
   struct i_matrix var_coord = init_i_matrix( 4, init_size );
   SEXP var_coord_row_names_r = PROTECT(mk_rownames( (const char*[]){"al.i", "r.pos", "q.pos", "nuc"}, 4 ));
-
+  if(bit_set(opt_flag, AR_Q_DIFF))
+    cig_opt.diff = &var_coord;
   // For base modification data:
   struct i_matrix mm_info = init_i_matrix( MM_INFO_RN, init_size );
   SEXP mm_info_rownames_r = PROTECT(mk_rownames( mm_info_rownames, MM_INFO_RN ));
+  if(bit_set(opt_flag, AR_AUX_MM))
+    cig_opt.mm_info = &mm_info;
   
   //  int column[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   // dimNames_r used to set rownames for the main return table
@@ -1208,6 +1275,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // Currently there is no option to return the quality scores; but I can add qualities
   // at mismatched position without modifying any data structures. I
   unsigned char *qqual=0; //
+  
   while((r=sam_itr_next(bam->sam, b_itr, al)) >= 0){
     qseq = qqual = 0;
     uint32_t flag = (uint32_t)al->core.flag;
@@ -1251,7 +1319,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 	str_array_push_cp(&query_qual, "*");
     }
     al_count++;
-    //    column[0] = al_count;
+
     // then go through the cigar string and for each op create a new column
     // of offsets for the al_count
     uint32_t *cigar = bam_get_cigar(al);
@@ -1261,81 +1329,28 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     int q_pos = 1;
     int q_beg=-1;
     int q_end=0;
-    // calculate the true query length from the cigar string
     int qcig_length = 0;
+    size_t ops_begin_col;
+    size_t ops_end_col;
+    // calculate the true query length from the cigar string
+    //    int qcig_length = 0;
     // In order to parse MM data we need to pass the columns of the al_coord table
     // that refer to the current alignment;
-    size_t ops_begin_col = al_coord.col;
-    for(int i=0; i < cigar_l; ++i){
-      // if operation is H also increment the qcig_length
-      if( (bam_cigar_type(cigar[i]) & 1) || (bam_cigar_op( cigar[i] ) == BAM_CHARD_CLIP) )
-	qcig_length += bam_cigar_oplen( cigar[i] );
-      int cig_op = bam_cigar_op(cigar[i]);
-      int cig_type = bam_cigar_type(cigar[i]);
-      int cig_oplen = bam_cigar_oplen(cigar[i]);
-      int ref_0 = r_pos;
-      int ref_1 = r_pos + (cig_type & CIG_OP_TP_RC ? cig_oplen : 0);
-      int q_0 = q_pos;
-      int q_1 = q_pos +  (cig_type & CIG_OP_TP_QC ? cig_oplen : 0);
-      if( q_beg == -1 && (cig_type & CIG_OP_TP_RC) )
-	q_beg = q_pos;
-      // If the caller has requested the variance information and the
-      // cigar op consumes both the query and the reference
-      // then check for differences in the sequence
-      if( (bit_set(opt_flag, AR_Q_DIFF) || bit_set(opt_flag, AR_Q_DEPTH)) && cig_type == 3 ){
-	// I added +1 to r_pos and q_pos above; this means that I
-	// need to subtract 1 from all of j here.
-	for(int j=0; j < cig_oplen; ++j){
-	  // Note that qseq may not be stored.
-	  if(qseq && (bit_set(opt_flag, AR_Q_DIFF)) && ((j + r_pos) < ref_seq_l) ){
-	    if(qseq[ q_pos + j - 1] != ref_seq[ r_pos + j -1 ]){
-	      int nuc_info = ((int)ref_seq[r_pos + j -1 ] << 8) | (int)qseq[q_pos+j -1];
-	      if(qqual)
-		nuc_info |= (qqual[q_pos+j-1] << 16);
-	      // This is a bit of a nameful, but see definition of data struct above
-	      push_column(&var_coord, (int[]){al_count, r_pos+j, q_pos+j,
-						nuc_info});
-	    }
-	  }
-	  if(bit_set(opt_flag, AR_Q_DEPTH)){
-	    // r_pos is 1 based
-	    int o = (r_pos+j-1) - region_range[0];
-	    if(o >= 0 && o < region_length)
-	      seq_depth[o]++;
-	  }
-	}
-      }
-      if( (bit_set(opt_flag, AR_Q_INTRON_DEPTH)) && cig_op == BAM_CREF_SKIP
-	  && (cig_oplen <= max_intron_length)){
-	for(int j=0; j < cig_oplen; ++j){
-	  // r_pos is 1 based
-	  int o = (r_pos+j-1) - region_range[0];
-	  if(o >= 0 && o < region_length)
-	    intron_depth[o]++;
-	}
-      }
-      // if an insertion then we need to increment the depth at a single
-      // reference position
-      // WRONG; this is not needed because the next operation will be a match
-      // op starting at the same position. This means that we will overcount the depth.
-      q_pos += bam_cigar_type(cigar[i]) & CIG_OP_TP_QC ? bam_cigar_oplen( cigar[i] ) : 0;
-      r_pos += bam_cigar_type(cigar[i]) & CIG_OP_TP_RC ? bam_cigar_oplen( cigar[i] ) : 0;
-      if(bam_cigar_type(cigar[i]) & 2)
-	q_end = q_pos;
-      push_column( &al_coord, (int[]){al_count, cig_op, cig_type, ref_0, q_0, ref_1, q_1, cig_oplen} );
-    }
-    size_t ops_end_col = al_coord.col;
+    // parse the cigar:
+    cig_opt.qseq = qseq;
+    cig_opt.qqual = qqual;
+    cig_opt.qseq_l = qseq ? al->core.l_qseq : 0;
+    cigar_to_table(al, al_count, &r_pos, &al_coord,
+		   &qcig_length, &q_beg, &q_end, &ops_begin_col, &ops_end_col, &cig_opt);
+
     push_column(&al_vars, (int[AR_AL_RN]){(int)al->core.flag, r_pos_0, r_pos, q_beg, q_end, (int)al->core.qual,
 					    (int)al->core.l_qseq, qcig_length, 1+(int)ops_begin_col, (int)ops_end_col});
     // We should modify the function so that we do not malloc and free for every query
     // sequence.
-    if(bit_set(opt_flag, AR_AUX_MM)){
-      parse_MM_string(al, 0, &mm_info, al_count, &al_coord, ops_begin_col, ops_end_col, ref_seq, ref_seq_l);
-    }
     // qseq may be 0, but that should be safe to free.
     // We only need to free qseq if we did not store it in the str_array_object
     // In fact we should never need to do this.
-    if(!bit_set(opt_flag, AR_Q_SEQ) )
+    if(!bit_set(opt_flag, AR_Q_SEQ) && qseq )
       free(qseq);
     qseq = 0;
   }
@@ -1553,6 +1568,8 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
   struct cigar_string cigar = cigar_string_init(256);
   int qcig_length, q_beg, q_end;
   size_t ops_begin, ops_end;
+  int rpos=0; // not actually used at the moment; needed as an argument to cigar_to_table
+  struct cigar_parse_options cig_opt = init_cigar_parse_options();
   while( (*count) < n && read_next_entry(bam, b) >= 0){
     if( (f_flag & b->core.flag) != f_flag || (F_flag & b->core.flag) > 0 || b->core.qual < min_q )
       continue;
@@ -1594,7 +1611,7 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
       aux_str.s[0] = 0;
     }
     if(ret_flag & (1 << S_CIG_TABLE)){
-      cigar_to_table(b, 1+(*count), &al_coord, &qcig_length, &q_beg, &q_end, &ops_begin, &ops_end);
+      cigar_to_table(b, 1+(*count), &rpos, &al_coord, &qcig_length, &q_beg, &q_end, &ops_begin, &ops_end, &cig_opt);
       push_column(&query_info, (int[]){ b->core.l_qseq, qcig_length, q_beg, q_end,
 					ops_begin, ops_end });
     }

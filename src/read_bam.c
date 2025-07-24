@@ -8,7 +8,6 @@
 
 // Acces to bam / sam and bcf / vcf files.
 
-
 // We want to hold connection data as an external pointer
 // to the relevant R data structures:
 
@@ -102,6 +101,7 @@ static void finalise_bam_ptrs(SEXP ptr_r){
   // It is _not_ safe to: 
   //  free( ptr->sam ); 
   // and there is no hts_file_destroy / sam_file_destroy
+  sam_close( ptr->sam );
   free( ptr ); // ??
   R_ClearExternalPtr(ptr_r);
 }
@@ -1173,8 +1173,10 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // numerically thus also allowing the same function to return the sequence depth for the region.
   hts_itr_t *b_itr = sam_itr_queryi(bam->index, target_id, region_range[0], region_range[1]);
   // hts_itr_destroy( ) not called on this anywhere
+  // hts_itr_destroy() is defined in hts.h; which suggests we should be using it.
   // The string version used previously:
   //  hts_itr_t *b_itr = sam_itr_querys(bam->index, bam->header, region);
+  // al should be destroyed with bam_destroy1
   bam1_t *al = bam_init1();
   int r=0;
   int al_count = 0;
@@ -1295,6 +1297,9 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       free(qseq);
     qseq = 0;
   }
+  // Destroy the iterator as we will have no further use of it:
+  hts_itr_destroy( b_itr );
+  bam_destroy1( al );
   // query ids
   SET_VECTOR_ELT(ret_data, 0, region_r);
   SET_VECTOR_ELT(ret_data, 1, allocVector(STRSXP, query_ids.length));
@@ -1319,6 +1324,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   }
   str_array_free(&query_ids);
   str_array_free(&query_seq);
+  str_array_free(&query_qual);
   str_array_free(&cigars);
   cigar_string_free(&cigars_string);
   // alignment variables

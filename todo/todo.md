@@ -36,32 +36,41 @@
 
 1. I have many instances of literal numbers in the code. These should be replaced
    with constants defined in `sam.h`, or elsewhere.  
-   **done?**Numeric bam operations have been replaced.
+   **done?** Most (all?) literal number definitions have been moved to common.h
 2. `sam.h` defines `BAM_CMATCH`, `BAM_CINS`, etc. I unfortunately redefined a load of `CIG_M`,
    etc. constants in `common.h` (these taking 1 based values). This is messy; I should only
-   use the `sam.h` ones.
+   use the `sam.h` ones. **done**
 3. In many cases I defined integer arrays (eg. `int av_column[8]` in `alignments_region()`) that I then
    populate with values from individual variables before passing the array as an argument to `push_column()`.
    This arrays are superfluous as I can instead pass, `(int[]){var1, var2, ...}`. Doing that should make the
    code more compact and more readable, and hence less prone to error.  
-   **partly addressed**
+   **done**
 4. `cigar_to_table()` and `alignments_region()` both parse the cigar data independently. This is because
    `alignments_region()` may need to also update depth and check for mismatches at every position. `sam_read_n()`
    instead creates the table first and then uses it to parse `MM` auxiliary tags (since it needs to do this in
    reverse for reverse complemented query sequences). We could make the functions more consistent though by
    having a helper function that parses a single cigar operation and assigns values to pointers.
+   **done** Both `sam_read_n()` and `alignments_region` now use `cigar_to_table()` to parse the cigar data
+   and to detect mismatches, base modifications and to calculate depth.
 5. `alignments_region()` uses the helper function `bam_seq()` to convert bam sequence data to `R` char* objects.
    `bam_seq()` calls `malloc` each time which then has to be freed; it would be better for it to take a pointer
    to a buffer that it can realloc if needed.
+   **complex** This seems inefficient, but if the query sequence is returned to the user, then this pointer is
+   anyway stored and it's contents copied to the `R` return `SEXP` object. However, if the query sequence is used
+   to detect differences, then we do end up with lots of `malloc` / `free` cycles. So it would make sense to
+   simply take the address and copy from that to the return data structure *only* if the query sequence will
+   be returned. This needs to be handled with a little bit of care though.
 6. In `alignments_region()` I call `strlen()` to determine the length of the reference sequence. I think that
    I should be able to simply use `LENGTH()` on the `CHARSXP` object instead and that this should be more
-   efficient.
+   efficient. **done**
 7. `alignments_region` defines a set of FLAG values that are used to determine what to return. These
    are given as the FLAG values (i.e. 1, 2, 4, ...). It would be better to use bitshift values as
    for `sam_read_n`; these can be chosen so that they correspond to the field in the return list;
    checking them requires expression like: `opt_flag & (1 << AR_Q_DIFF)`, but it means I can do:
    `if(opt_flag ^ (1 << AR_Q_DEPTH)) SET_VECTOR_ELT(ret_data, AR_Q_DEPTH, allocVECTOR(...`. Which
    would remove some dangerous values.
+   **partly done** The flag values are now defined by their bit position as for `sam_read_n()`; but 
+   I'm not yet using them to define the return data structure.
 
 ## Irritating inconsistencies
 

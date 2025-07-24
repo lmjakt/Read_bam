@@ -6,54 +6,7 @@
 #include "common.h"
 #include "qname_hash.h"
 
-// This provides acces to bam / sam and bcf / vcf files.
-
-// The following define what should be returned from calls to
-// alignments_region()
-// The mess of flags is as usual for historical reasons
-#define AR_Q_SEQ 0 // 0x1 // return query seq data
-#define AR_Q_DIFF 1 // 0x2 // return positions an identities where query != ref
-#define AR_Q_DEPTH 2 // 0x4 // return sequencing depth
-#define AR_CIG 3 // 0x8      construct and return a cigar string
-#define AR_Q_QUAL 4 // 0x10  return query qualities (ascii encoded; i.e. phred + 0)
-#define AR_MT_INFO 5 // 0x20   return information about mate including tlen (not implemented)
-#define AR_AUX_MM 6 // 0x40  parse MM info; implies if AR_Q_QUAL, and (AR_Q_SEQ if reference sequence defined).
-#define AR_Q_INTRON_DEPTH 7 // 0x80  calculate depths for N operations only; useful for RNA-seq data.
-
-#define MAX_INTRON_L 4096 // if not set by user
-// The number of fields in the list returned by alignments_region()
-#define AR_R_FIELDS_N 11
-static const char* ar_return_fields[AR_R_FIELDS_N] = {"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual", "mm", "intron.depth"};
-
-// define the bit positions of a set of ret_flag values
-// note that these start at 0, so that they can be used
-// by: 1 << S_QID  => 0, 1 << S_FLAG => 2, etc..
-// This is speicific to sam_read_n() 
-#define S_QID 0 // 0x1
-#define S_FLAG 1 // 0x2
-#define S_RNAME 2  // 0x4
-#define S_POS 3  // 0x8
-#define S_MAPQ 4 // 0x10
-#define S_CIGAR 5 // 0x20
-#define S_RNEXT 6 // 0x40
-#define S_PNEXT 7 // 0x80
-#define S_TLEN 8  // 0x100
-#define S_SEQ 9   // 0x200
-#define S_QUAL 10  // 0x400
-#define S_AUX 11 // 0x800
-#define S_CIG_TABLE 12  // 0x1000
-#define S_AUX_MM 14  // 0x4000
-
-// to check if a bit is set we can use:
-#define bit_set(flag, bit) ( ((1 << (bit)) & (flag)) > 0 )
-
-// and a vector of return types:
-//  Note that these are specific to sam_read_n()
-// seems reasonable to define the names of these here as well.
-// since these depend on each other.
-const unsigned int R_ret_types[12] = {STRSXP, INTSXP, INTSXP, INTSXP, INTSXP, // ID, FLAG, RNAME, POS, MAPQ
-				      STRSXP, INTSXP, INTSXP, INTSXP, // CIGAR, RNEXT, PNEXT, TLEN
-				      STRSXP, STRSXP, STRSXP}; // SEQ, QUAL, AUX
+// Acces to bam / sam and bcf / vcf files.
 
 
 // We want to hold connection data as an external pointer
@@ -575,7 +528,6 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
       nuc_info |= (is_fwd << 1);
     }
     push_column( mod_data, (int[]){al_i, (int)qpos, (int)mod_code, mod_n, 0, r_pos, nuc_info} );
-    //    push_column( mod_data, (int[]){al_i, (int)seq_i, (int)mod_code, mod_n, 0, r_pos, nuc_info} );
     // find the comma or the semicolon
     while(*data && *data >= '0' && *data <= '9' )
       ++data;
@@ -1506,9 +1458,10 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
   // the id, flag, cigar, seq and quality.. But we can check that later.
   //  SEXP ret_data = PROTECT( allocVector(VECSXP, 5) );
   // n, the number of reads obtained, and then the 12 fields of the sam forma;
-  SEXP ret_data_names = PROTECT( mk_strsxp( (const char*[]){"id", "flag", "ref", "pos", "mapq",
-							      "cigar", "ref.m", "pos.m", "tlen",
-							      "seq", "qual", "aux", "ops", "q.inf", "mm", "n"}, 16));
+  SEXP ret_data_names = PROTECT(mk_strsxp( srn_return_fields, SRN_FIELDS_N ));
+  /* SEXP ret_data_names = PROTECT( mk_strsxp( (const char*[]){"id", "flag", "ref", "pos", "mapq", */
+  /* 							      "cigar", "ref.m", "pos.m", "tlen", */
+  /* 							      "seq", "qual", "aux", "ops", "q.inf", "mm", "n"}, 16)); */
   SEXP ret_data = PROTECT( allocVector(VECSXP, length(ret_data_names)) );
   setAttrib( ret_data, R_NamesSymbol, ret_data_names );
   // The last element is a single integer counting the number of entries returned:

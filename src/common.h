@@ -6,22 +6,10 @@
 
 // Useful constants:
 
-// The following are true for the encoding used in cig_ops tables;
-// as provided to R from functions here.
-// They differ from the original bam encoding by counting from 0.
-// it's BAM encoding + 1
-// We probably don't need these; we should instead use the
+// Numeric cigar string operations are defined in sam.h
+// mapping 0-9 to:
 // BAM_CMATCH, BAM_CINS, BAM_CDEL, BAM_CREF_SKIP, BAM_CSOFT_CLIP, BAM_CHARD_CLIP
-// BAM_CPAD, BAM_CEQUAL, BAM_CDIFF, BAM_CBACK that are defined in sam.h
-#define CIG_M 1
-#define CIG_I 2
-#define CIG_D 3
-#define CIG_N 4
-#define CIG_S 5
-#define CIG_H 6
-#define CIG_P 7
-#define CIG_EQ 8
-#define CIG_X 9
+// BAM_CPAD, BAM_CEQUAL, BAM_CDIFF, BAM_CBACK 
 
 // cigar operation type defines whether the query, reference
 // or both are consumed (1,2,3). 
@@ -31,8 +19,33 @@
 #define CIG_OP_TP_QC 1
 #define CIG_OP_TP_RC 2
 
-// The following define the number of rows  and their names in tables returned by
-// aligned_region and sam_read_n
+// Bits defining optional fields for:
+// alignments_region:
+
+// The following define what should be returned from calls to
+// alignments_region()
+// The mess of flags is as usual for historical reasons
+#define AR_Q_SEQ 0 // 0x1 // return query seq data
+#define AR_Q_DIFF 1 // 0x2 // return positions an identities where query != ref
+#define AR_Q_DEPTH 2 // 0x4 // return sequencing depth
+#define AR_CIG 3 // 0x8      construct and return a cigar string
+#define AR_Q_QUAL 4 // 0x10  return query qualities (ascii encoded; i.e. phred + 0)
+#define AR_MT_INFO 5 // 0x20   return information about mate including tlen (not implemented)
+#define AR_AUX_MM 6 // 0x40  parse MM info; implies if AR_Q_QUAL, and (AR_Q_SEQ if reference sequence defined).
+#define AR_Q_INTRON_DEPTH 7 // 0x80  calculate depths for N operations only; useful for RNA-seq data.
+
+// A default maximum intron size; this can be over-ridden by the user
+// This is relevant to the calculation of intron_depth, but should not
+// be used otherwise?
+#define MAX_INTRON_L 4096 
+
+// Definitions of data structure fields created by alignments_region
+// and sam_read_n
+
+// The number of fields in the list returned by alignments_region()
+// and their names.
+#define AR_R_FIELDS_N 11
+static const char* ar_return_fields[AR_R_FIELDS_N] = {"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual", "mm", "intron.depth"};
 
 // The number of rows in an alignments table ($al)
 #define AR_AL_RN 10
@@ -41,18 +54,56 @@ static const char* ar_al_rownames[AR_AL_RN] = {"flag", "r.beg", "r.end", "q.beg"
 // The number of rows in an cigar operations table
 #define CIG_OPS_RN 8
 #define OPS_INIT_SIZE 256
-// a global variable; I feel dirty;
 static const char* cig_ops_rownames[CIG_OPS_RN] = {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
 
-#define Q_INFO_RN 6
-static const char* q_info_rownames[Q_INFO_RN] = {"qlen", "q.cigl", "q.beg", "q.end", "ops.beg", "ops.end"};
-
+// The fields of base modification information (MM)
 #define MM_INFO_RN 7
 static const char* mm_info_rownames[MM_INFO_RN] = {"al.i", "q.pos", "mod", "mod.n", "mod.l", "r.pos", "base.inf"};
 
+// The number of rows in a query info table (returned by sam_read_n()) cigar operations table
+#define Q_INFO_RN 6
+static const char* q_info_rownames[Q_INFO_RN] = {"qlen", "q.cigl", "q.beg", "q.end", "ops.beg", "ops.end"};
 
-// not sure why this isn't in a header somewhere
-// but I can't find it.
+
+// The bit positions used to define what is returned by sam_read_n
+// bit 0 indicates the first (least significant bit). To check whether
+// bits are set:
+// by: 1 << S_QID  => 0, 1 << S_FLAG => 2, etc..
+// as implemented in the bit_set() macro (below).
+// Note that these are specific to sam_read_n() 
+#define S_QID 0 // 0x1
+#define S_FLAG 1 // 0x2
+#define S_RNAME 2  // 0x4
+#define S_POS 3  // 0x8
+#define S_MAPQ 4 // 0x10
+#define S_CIGAR 5 // 0x20
+#define S_RNEXT 6 // 0x40
+#define S_PNEXT 7 // 0x80
+#define S_TLEN 8  // 0x100
+#define S_SEQ 9   // 0x200
+#define S_QUAL 10  // 0x400
+#define S_AUX 11 // 0x800
+#define S_CIG_TABLE 12  // 0x1000
+#define S_AUX_MM 14  // 0x4000
+
+// to check if a bit is set we can use:
+#define bit_set(flag, bit) ( ((1 << (bit)) & (flag)) > 0 )
+
+// The number of fields returned by sam_read_n
+#define SRN_FIELDS_N 16
+static const char* srn_return_fields[SRN_FIELDS_N] = {"id", "flag", "ref", "pos", "mapq",
+						      "cigar", "ref.m", "pos.m", "tlen", "seq", "qual",
+						      "aux", "ops", "q.inf", "mm", "n" };
+// The number of standard fields (all vectors of length n):
+#define SRN_VEC_FIELDS_N 12
+static const unsigned int R_ret_types[SRN_VEC_FIELDS_N] = {STRSXP, INTSXP, INTSXP, INTSXP, INTSXP, // ID, FLAG, RNAME, POS, MAPQ
+							   STRSXP, INTSXP, INTSXP, INTSXP, // CIGAR, RNEXT, PNEXT, TLEN
+							   STRSXP, STRSXP, STRSXP}; // SEQ, QUAL, AUX
+
+
+// Nibble -> IUPAC mapping
+// Seems like this should be in an htslib header somewhere,
+// but I haven't foud it.
 // this is a copy of seq_nt16_str defined as a non null-
 // terminated vector array
 static const char *nuc_encoding = "=ACMGRSVTWYHKDBN";
@@ -61,7 +112,7 @@ static const char *nuc_encoding_rc = "=TGKCYSBAWRDMHVN";
 
 // These are structures for dynamically growing a return data set;
 // They would be better off in a library somewhere as I keep repeating
-// this code.
+// this code. Or better; use kvec ?
 
 // row major? as in R
 struct i_matrix {

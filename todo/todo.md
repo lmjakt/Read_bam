@@ -71,6 +71,8 @@
    would remove some dangerous values.
    **partly done** The flag values are now defined by their bit position as for `sam_read_n()`; but 
    I'm not yet using them to define the return data structure.
+8. `cigar_to_table()` takes too many arguments. It would be better for all of the arguments to be passed
+   as part of a `cigar_parse_options` struct (`cig_opt`).
 
 ## Irritating inconsistencies
 
@@ -85,8 +87,10 @@ initially test the functions. Instead it should have:
 
 1. Some suitable data files (i.e. `bam`, `bcf`, `sam`, `cram`) that are used to test functions.
    This is partly in place, but there is no description of what these files are, or how they
-   can be used.
-2. One or more R files that run the functions.
+   can be used.  
+   **partly addressed**
+2. One or more R files that run the functions.  
+   **partly addressed**
 3. Saved results from previous test runs that have been checked for correctness. These should
    be used to compare results after code updates.
 4. A file containing a summary of the tests.

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <htslib/sam.h>
 #include <htslib/vcf.h>
+#include <pthread.h>
 #include "common.h"
 #include "qname_hash.h"
 
@@ -35,52 +36,6 @@ struct bcf_ptrs {
   hts_itr_t *b_itr;
 };
 
-// with functions to read from a bam1_t pointer
-struct cigar_string {
-  char *buffer;
-  size_t string_length; // not including the 0
-  size_t buf_size;
-};
-
-struct cigar_string cigar_string_init(size_t b_size){
-  struct cigar_string cs;
-  cs.buffer = malloc(b_size);
-  cs.buf_size = b_size;
-  cs.string_length = 0;
-  return(cs);
-}
-
-void cigar_string_free( struct cigar_string *cs ){
-  free(cs->buffer);
-  cs->buffer = 0;
-  cs->buf_size = 0;
-  cs->string_length = 0;
-}
-
-void cigar_string_grow( struct cigar_string *cs ){
-  cs->buf_size = cs->buf_size == 0 ? 256 : cs->buf_size * 2;
-  char *nb = malloc(cs->buf_size);
-  memcpy( nb, cs->buffer, cs->string_length );
-  free(cs->buffer);
-  cs->buffer = nb;
-}
-
-void cigar_string_read( struct cigar_string *cs, bam1_t *b ){
-  if( cs->buf_size == 0 )
-    cigar_string_grow(cs);
-  cs->string_length = 0;
-  cs->buffer[0] = 0; // NULL terminated!
-  uint32_t *cig = bam_get_cigar(b);
-  int32_t cig_l = b->core.n_cigar;
-  for(int i=0; i < cig_l; ++i){
-    char op = BAM_CIGAR_STR[ bam_cigar_op(cig[i]) ];
-    uint32_t op_l = bam_cigar_oplen( cig[i] );
-    while( cs->string_length + 2 + (size_t)log10f((float)op_l) >= cs->buf_size )
-      cigar_string_grow( cs );
-    cs->string_length += snprintf( cs->buffer + cs->string_length, cs->buf_size - cs->string_length,
-				   "%d%c", op_l, op );
-  }
-}
 
 static void finalise_bam_ptrs(SEXP ptr_r){
   //  Rprintf("finalising bam_ptrs\n");
@@ -461,7 +416,7 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
     return;
   }
   char nuc = mm[3];
-  char strand = mm[4];
+  //  char strand = mm[4];
   // determine how many modifications are related to each entry
   uint32_t mod_code;
   char skip_info;
@@ -535,7 +490,7 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
       if(data[1] == 0)
 	break;
       nuc = data[1];
-      strand = data[2];
+      //      strand = data[2];
       data = get_ml_code(data+3, &mod_code, &mod_n, &skip_info);
       current_op = is_fwd ? ops_beg : ops_end - 1;
       // here data can be 0 if the ';' indicates the end of the MM field.
@@ -588,28 +543,6 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   return;
 }
 
-// depth: if not NULL, pointer for sequence depth
-// i_depth; intron_depth
-// depth_l: length of depth and i_depth arrays
-struct cigar_parse_options {
-  int *depth, *i_depth;
-  int max_intron_length;
-  size_t depth_begin;
-  size_t depth_l;
-  const char *qseq;
-  const char *qqual;
-  size_t qseq_l;
-  const char *rseq;
-  size_t rseq_l;
-  struct i_matrix *diff, *mm_info;
-};
-
-// this defaults to a struct with all elements set to 0;
-struct cigar_parse_options init_cigar_parse_options(){
-  struct cigar_parse_options cpo;
-  memset( &cpo, 0, sizeof(struct cigar_parse_options) );
-  return(cpo);
-}
 
 // Parse the cigar data and extend:
 // A cigar operations table containing the operations, their lengths and
@@ -634,7 +567,9 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
 		    struct i_matrix *al_coord,
 		    int *qcig_length, int *q_beg, int *q_end,
 		    size_t *ops_beg, size_t *ops_end,
-		    struct cigar_parse_options *opts){
+		    struct cigar_parse_options *opts, int do_push){
+  // Only add to al_coord / diff / mm_info tables if do_push is TRUE
+  
   // use a 1-based coordinate system instead of a 0-based one
   // for consistency with R and aligned_regions
   *r_pos = 1 + (int)al->core.pos;
@@ -671,7 +606,8 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
     *r_pos += type & 2 ? op_length : 0;
     if(op == BAM_CMATCH)
       *q_end = q_pos;
-    push_column( al_coord, (int[]){ al_i, op, type, r0, q0, *r_pos, q_pos, op_length } );
+    if(do_push)
+      push_column( al_coord, (int[]){ al_i, op, type, r0, q0, *r_pos, q_pos, op_length } );
     if((opts->depth || opts->diff) && op == BAM_CMATCH){
       // the r0 and q0 coordinates are 1 based; we need to adjust for this
       for(int j=0; j < op_length; ++j){
@@ -679,6 +615,8 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
 	size_t q = q0 + j - 1;
 	size_t d_o = r - opts->depth_begin;
 	if(d_o < opts->depth_l) ++opts->depth[d_o];
+	if(!do_push)
+	  continue;
 	// Here I assume that if qseq_l is set then qseq will also be set
 	// I leave qqual as an option as it will just mean quality = 0
 	if(opts->diff && opts->qseq && q < opts->qseq_l
@@ -689,7 +627,7 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
 	}
       }
     }
-    if(opts->i_depth && op == BAM_CREF_SKIP & op_length <= opts->max_intron_length){
+    if(opts->i_depth && op == BAM_CREF_SKIP && (op_length <= opts->max_intron_length)){
       for(int j=0; j < op_length; ++j){
 	size_t d_o = r0 + j - (1 + opts->depth_begin);
 	if(d_o < opts->depth_l)
@@ -697,6 +635,8 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
       }
     }
   }
+  if(!do_push)
+    return;
   *ops_end = al_coord->col;
   if(opts->mm_info){
     parse_MM_string(al, 0, opts->mm_info, al_i, al_coord, *ops_beg, *ops_end, opts->rseq, opts->rseq_l);
@@ -1051,6 +991,345 @@ SEXP query_positions(SEXP bam_ptr_r, SEXP query_ids_r){
   return(ret);
 }
 
+
+// Parse a region in parallel using pthreads.
+// Use 0-based counting for positions.
+// The pointers to all data structures excepth for depth in args should be
+// initialised here. They should be 0 at this point.
+void *alignments_region_thread(void *v_args){
+  alignments_region_mt_args *args = (alignments_region_mt_args*)v_args;
+  // First load the bam file and create the iterator.
+  args->sam = sam_open(args->bam_file, "r");
+  args->index = sam_index_load(args->sam, args->bam_index_file);
+  if(!args->sam || !args->index)
+    return(0);
+  args->bam_it = sam_itr_queryi( args->index, args->target_id, args->start, args->end);
+  
+  uint32_t opt_flag = args->opts;
+  size_t init_size = args->imatrix_initial_size;
+  struct cigar_parse_options *cig_opts = &args->cig_opt;
+  //  size_t region_length = (size_t)(args->end - args->start);
+  // mandatory fields 
+  args->al_core = init_i_matrix(AR_AL_RN, init_size);
+  args->query_ids = init_str_array(init_size);
+  args->al_ops = init_i_matrix(CIG_OPS_RN, args->imatrix_initial_size);
+  // optional fields
+  args->query_seq = init_str_array(init_size);
+  args->query_qual = init_str_array(init_size);
+  args->cigars = init_str_array(init_size);
+
+  // optional fields held by args->cig_options: checking BOTH is
+  // not a good idea; the information should be stored in one place only.
+  if(bit_set(opt_flag, AR_Q_DEPTH) && cig_opts->depth)
+    cig_opts->depth = cig_opts->depth + (args->start - cig_opts->depth_begin);
+
+  if(bit_set(opt_flag, AR_Q_INTRON_DEPTH) && cig_opts->i_depth)
+    cig_opts->i_depth = cig_opts->i_depth + (args->start - cig_opts->depth_begin);
+
+  cig_opts->depth_l = args->end - args->start;
+  cig_opts->depth_begin = args->start;
+
+  // This is a bit wasteful; but it simplifies things somewhat.
+  args->mm_info = init_i_matrix(MM_INFO_RN, args->imatrix_initial_size);
+  args->diff = init_i_matrix(Q_DIFF_RN, args->imatrix_initial_size);
+  cig_opts->mm_info = bit_set(opt_flag, AR_AUX_MM) ? &args->mm_info : 0;
+  cig_opts->diff = bit_set(opt_flag, AR_Q_DIFF) ? &args->diff : 0;
+  
+  // the iterator should be initialised before calling pthread_create
+  int ret;
+  bam1_t *al = bam_init1(); // needs to be destroyed at the end of parsing;
+  int start = args->start;
+  //  int end = args->end;
+  //  int include_left = cig_opts->include_left_als;
+  uint32_t *flag_filter = (uint32_t*)args->flag_filter;
+  size_t seq_buffer_size=1024;
+  // If we need to pass the query sequence to cigar_to_table; set up a buffer:
+  int need_qseq = bit_set(opt_flag, AR_Q_SEQ) || bit_set(opt_flag, AR_Q_DIFF) || bit_set(opt_flag, AR_AUX_MM );
+  cig_opts->qseq = need_qseq ? malloc(seq_buffer_size) : 0;
+  struct cigar_string cigars_string = cigar_string_init(seq_buffer_size);
+  int q_beg, q_end;
+  size_t ops_begin_col, ops_end_col;
+  while((ret=sam_itr_next(args->sam, args->bam_it, al)) >= 0){
+    int rpos_0 = 1 + (int)al->core.pos;
+    int do_push = rpos_0 >= start || cig_opts->include_left_als;
+    int rpos_1 = rpos_0;
+    uint32_t flag = al->core.flag;
+    if((flag_filter[0] & flag) != flag_filter[0] || (flag_filter[1] & flag) > 0)
+      continue;
+    if(do_push){
+      cig_opts->qseq_l = al->core.l_qseq;
+      // bam_get_qual only returns a pointer to existing memory; hence it is cheap
+      cig_opts->qqual = (char*)bam_get_qual(al); // This does not allocate memory
+
+      // bam_seq_p, reads to seq_buffer (may need to change from const char* to char*)
+      if(need_qseq)
+	seq_buffer_size = bam_seq_p(al, &cig_opts->qseq, seq_buffer_size); 
+
+      if(bit_set(opt_flag, AR_CIG))
+	cigar_string_read( &cigars_string, al );
+    }
+    size_t al_i = 1 + args->al_core.col;
+    // Parse the cigar data:
+    int qcig_length = 0;
+    cigar_to_table(al, al_i, &rpos_1, &args->al_ops,
+		   &qcig_length, &q_beg, &q_end, &ops_begin_col, &ops_end_col, cig_opts, do_push);
+
+    if(do_push){
+      // {0:flag, 1:r.beg, 2:r.end, 3:q.beg, 4:q.end, 5:mqual, 6:qlen, 7:qclen, 8:ops.0, 9:ops.1}
+      push_column(&args->al_core, (int[AR_AL_RN]){flag, rpos_0, rpos_1, q_beg, q_end, (int)al->core.qual,
+						  (int)al->core.l_qseq, qcig_length, 1+ops_begin_col,
+						  ops_end_col});
+      str_array_push_cp(&args->query_ids, bam_get_qname(al));
+      // optional fields:
+      if(bit_set(opt_flag, AR_Q_SEQ))
+	str_array_push_cp(&args->query_seq, cig_opts->qseq);
+
+      if(bit_set(opt_flag, AR_Q_QUAL))
+	str_array_push_cp_n(&args->query_qual, cig_opts->qqual, al->core.l_qseq);
+
+      if(bit_set(opt_flag, AR_CIG))
+	str_array_push_cp(&args->cigars, cigars_string.buffer);
+    }
+  }
+  // free up local resources
+  free(cig_opts->qseq);
+  cig_opts->qseq = 0;
+  free(cigars_string.buffer);
+  pthread_exit((void*)args);
+}
+
+SEXP alignments_region_mt(SEXP bam_file_r, SEXP index_file_r,
+			  SEXP region_r, SEXP region_range_r,
+			  SEXP flag_filter_r, 
+			  SEXP opt_flag_r, SEXP ref_seq_r,
+			  SEXP min_mq_r, SEXP min_ql_r, SEXP max_intron_l_r,
+			  SEXP n_threads_r){
+  if(TYPEOF(bam_file_r) != STRSXP || length(bam_file_r) != 1)
+    error("bam_file_r should contain a single string giving the bam file name");
+  if(TYPEOF(index_file_r) != STRSXP || length(index_file_r) != 1)
+    error("index_file_r should contain a single string giving the name of the bam index file");
+  const char *bam_file = CHAR(STRING_ELT( bam_file_r, 0 ));
+  const char *index_file = CHAR(STRING_ELT( index_file_r, 0 ));
+  // Test that we can open these:
+  samFile *tmp_sam = sam_open( bam_file, "r" );
+  if(!tmp_sam)
+    error("alignments_region_mt: unable to open bam file: %s", bam_file);
+  hts_idx_t *tmp_index = sam_index_load(tmp_sam, index_file);
+  if(!tmp_index){
+    sam_close(tmp_sam);
+    error("alignments_region_mt: Unable to load index from %s", index_file);
+  }
+  sam_hdr_t *sam_header = sam_hdr_read(tmp_sam);
+  hts_idx_destroy(tmp_index);
+  sam_close(tmp_sam);
+  
+  if(TYPEOF(n_threads_r) != INTSXP || length(n_threads_r) != 1)
+    error("n_threads_r should be an integer vector of length 1");
+  int n_threads = INTEGER(n_threads_r)[0];
+  if(n_threads < 0){
+    warning("negative number of threads (%d) specified. nthreads set to 1", n_threads);
+    n_threads = 1;
+  }
+  if(n_threads > MAX_THREADS){
+    warning("requested number (%d) of threads exceeds max allowed: using %d", n_threads, MAX_THREADS);
+    n_threads = MAX_THREADS;
+  }
+  //// From HERE to PARSE_ARGS_END the code is identical to alignments_region
+  //// I should refactor this part into smaller functions;
+  //// could have functions like, extract_matrix_i(SEXP, *nrow, *ncol, *data, min_nrow, min_ncol)
+  if(TYPEOF(region_r) != STRSXP || length(region_r) < 1)
+    error("region_r should be a character vector of positive length");
+
+  if(TYPEOF(region_range_r) != INTSXP || length(region_range_r) != 2)
+    error("region_range should be an integer vector of length 2");
+  int *region_range = INTEGER(region_range_r);
+
+  if(region_range[1] <= region_range[0] || region_range[0] < 0)
+    error("Unsorted region_range");
+  const char *region = CHAR(STRING_ELT(region_r, 0));
+  int target_id = sam_hdr_name2tid(sam_header, region);
+  if(target_id < 0){
+    warning("Unable to find target id for specified region: %s", region);
+    return(R_NilValue);
+  }
+  if(TYPEOF(flag_filter_r) != INTSXP || length(flag_filter_r) != 2)
+    error("flag_filter should be an integer vector of length 2");
+  if(TYPEOF(opt_flag_r) != INTSXP || length(opt_flag_r) != 1)
+    error("opt_flag should be a single integer value");
+  int opt_flag = asInteger(opt_flag_r);
+  if(opt_flag < 0)
+    opt_flag = 0;
+  // cig_opt will be passed to cigar_to_table()
+  // the default values are all 0s
+  struct cigar_parse_options cig_opt = init_cigar_parse_options();
+  cig_opt.depth_begin = region_range[0];
+  
+  if(bit_set(opt_flag, AR_Q_DIFF) && ((TYPEOF(ref_seq_r) != STRSXP) || length(ref_seq_r) != 1))
+    error("Sequence divergence requested but ref_seq is not a character vector of length 1 ");
+  const char *ref_seq = (TYPEOF(ref_seq_r) == STRSXP) ? CHAR(STRING_ELT(ref_seq_r, 0)) : 0;
+  // which returns an int (which we can change to a size_t)
+  size_t ref_seq_l = (size_t)(ref_seq != 0) ? LENGTH(STRING_ELT(ref_seq_r, 0)) : 0;
+  cig_opt.rseq = ref_seq;
+  cig_opt.rseq_l = ref_seq_l;
+  int *flag_filter_rp = INTEGER(flag_filter_r);
+  // default values; no filtering
+  uint32_t flag_filter[2] = {0, 0};
+  // override if set by user.
+  if(flag_filter_rp[0] >= 0)
+    flag_filter[0] = (uint32_t)flag_filter_rp[0];
+  if(flag_filter_rp[1] >= 0)
+    flag_filter[1] = (uint32_t)flag_filter_rp[1];
+
+  if(TYPEOF(min_mq_r) != INTSXP || length(min_mq_r) != 1)
+    error("min_mq_r should be an integer vector of length 1");
+  if(TYPEOF(min_ql_r) != INTSXP || length(min_ql_r) != 1)
+    error("min_ql_r should be an integer vector of length 1");
+  int min_mq = asInteger(min_mq_r);
+  int min_ql = asInteger(min_ql_r);
+
+  // Set up the return data structure as a named list
+  SEXP ret_names_r = PROTECT( mk_strsxp(ar_return_fields, AR_R_FIELDS_N) );
+  SEXP ret_data = PROTECT(allocVector(VECSXP, length(ret_names_r)));
+  setAttrib( ret_data, R_NamesSymbol, ret_names_r );
+
+  // If depth requested we can add this to the data structure immediately..
+  int *seq_depth = 0;
+  /// I think I should get rid of the 1 + here.
+  int region_length = 1 + region_range[1] - region_range[0];
+  if(bit_set(opt_flag, AR_Q_DEPTH) | bit_set(opt_flag, AR_Q_INTRON_DEPTH))
+    cig_opt.depth_l = region_length;
+  if(bit_set(opt_flag, AR_Q_DEPTH)){
+    SET_VECTOR_ELT( ret_data, 6, allocVector(INTSXP, region_length) );
+    seq_depth = INTEGER(VECTOR_ELT(ret_data, 6));
+    memset( seq_depth, 0, sizeof(int) * region_length );
+    cig_opt.depth = seq_depth;
+  }
+  // And similarly for the intron depth:
+  cig_opt.max_intron_length = MAX_INTRON_L; // unless set by user
+  if(TYPEOF(max_intron_l_r) == INTSXP && length(max_intron_l_r) == 1){
+    cig_opt.max_intron_length = INTEGER(max_intron_l_r)[0];
+  }else{
+    warning("max_intron_length set to default value (%d)", cig_opt.max_intron_length);
+  }
+  int *intron_depth = 0;
+  if(bit_set(opt_flag, AR_Q_INTRON_DEPTH)){
+    SET_VECTOR_ELT( ret_data, 10, allocVector(INTSXP, region_length));
+    intron_depth = INTEGER(VECTOR_ELT(ret_data, 10));
+    memset( intron_depth, 0, sizeof(int) * region_length );
+    cig_opt.i_depth = intron_depth;
+  }
+  // PARSE_ARGS_END: end of (almost) identical code (copy pasted evil)
+
+  pthread_t *threads = malloc(sizeof(pthread_t) * n_threads);
+  alignments_region_mt_args *t_args = malloc(sizeof(alignments_region_mt_args) * n_threads);
+  alignments_region_mt_args args_p = init_ar_args();
+  args_p.bam_file = bam_file;
+  args_p.bam_index_file = index_file;
+  args_p.target_id = target_id;
+  args_p.flag_filter = flag_filter;
+  args_p.cig_opt = cig_opt;
+  args_p.opts = opt_flag;
+  int sub_range = region_length / n_threads;
+  int start = region_range[0];
+  int rem = region_length % n_threads;
+  // Looks like I will need to create a new samFile for each of these
+  for(int i=0; i < n_threads; ++i){
+    t_args[i] = args_p; // the prototype
+    t_args[i].start = start;
+    t_args[i].end = start + sub_range + (i == 0 ? rem : 0);
+    start = t_args[i].end;
+    t_args[i].cig_opt.include_left_als = (i == 0) ? 1 : 0;
+    pthread_create( &threads[i], NULL, alignments_region_thread, (void*)&t_args[i]);
+  }
+  void *status;
+  int n_core=0, n_ops=0, n_diff=0, n_mm=0;
+  for(int i=0; i < n_threads; ++i){
+    pthread_join(threads[i], &status);
+  // Then merge the data and clean up stuff..
+    n_core += t_args[i].al_core.col;
+    n_ops += t_args[i].al_ops.col;
+    n_diff += t_args[i].diff.col;
+    n_mm += t_args[i].mm_info.col;
+  }
+  // depth (6) and intron depth have already been set (10)
+  // There should be a better way of doing this, but..
+  SET_VECTOR_ELT(ret_data, 0, region_r);
+  SET_VECTOR_ELT(ret_data, 1, allocVector(STRSXP, n_core));
+  SET_VECTOR_ELT(ret_data, 2, allocMatrix(INTSXP, AR_AL_RN, n_core));
+  SET_VECTOR_ELT(ret_data, 3, allocMatrix(INTSXP, CIG_OPS_RN, n_ops));
+  if(bit_set(opt_flag, AR_Q_SEQ))
+    SET_VECTOR_ELT(ret_data, 4, allocVector(STRSXP, n_core));
+  if(bit_set(opt_flag, AR_Q_DIFF))
+    SET_VECTOR_ELT(ret_data, 5, allocMatrix(INTSXP, Q_DIFF_RN, n_diff));
+  if(bit_set(opt_flag, AR_CIG))
+    SET_VECTOR_ELT(ret_data, 7, allocVector(STRSXP, n_core));
+  if(bit_set(opt_flag, AR_Q_QUAL))
+    SET_VECTOR_ELT(ret_data, 8, allocVector(STRSXP, n_core));
+  if(bit_set(opt_flag, AR_AUX_MM))
+    SET_VECTOR_ELT(ret_data, 9, allocMatrix(INTSXP, MM_INFO_RN, n_mm));
+
+  // The following (with lots of copying of strings), may be wortwhile to
+  // also thread. It should be fairly straightforward.
+  int *core_al = INTEGER(VECTOR_ELT(ret_data, 2));
+  int *cig_ops = INTEGER(VECTOR_ELT(ret_data, 3));
+  int *diff = INTEGER(VECTOR_ELT(ret_data, 5));
+  int *aux_mm = INTEGER(VECTOR_ELT(ret_data, 9));
+
+  SEXP query_id = PROTECT(VECTOR_ELT(ret_data, 1));
+  SEXP query_seq = PROTECT(VECTOR_ELT(ret_data, 4));
+  SEXP cigars = PROTECT(VECTOR_ELT(ret_data, 7));
+  SEXP qqual = PROTECT(VECTOR_ELT(ret_data, 8));
+  
+  // First check the single threaded way:
+  int core_i=0, ops_i=0, diff_i=0, mm_i=0;
+  int core_off = 0, ops_off=0, diff_off=0, mm_off=0;
+  size_t int_size = sizeof(int);
+  for(int i=0; i < n_threads; ++i){
+    memcpy(core_al + (AR_AL_RN * core_off), t_args[i].al_core.data,
+	   (AR_AL_RN * t_args[i].al_core.col * int_size));
+    memcpy(cig_ops + (CIG_OPS_RN * ops_off), t_args[i].al_ops.data,
+	   (CIG_OPS_RN * t_args[i].al_ops.col * int_size));
+    if(bit_set(opt_flag, AR_Q_DIFF))
+      memcpy(diff + (Q_DIFF_RN * diff_off), t_args[i].diff.data,
+	     (Q_DIFF_RN * t_args[i].diff.col * int_size));
+    if(bit_set(opt_flag, AR_AUX_MM))
+      memcpy(aux_mm + (MM_INFO_RN * mm_off), t_args[i].mm_info.data,
+	     (MM_INFO_RN * t_args[i].mm_info.col * int_size));
+    // We then have to copy lots of string data;
+
+    for(int j=0; j < t_args[i].al_core.col; ++j){
+      SET_STRING_ELT(query_id, core_off + j, mkChar(t_args[i].query_ids.strings[j]));
+      if(bit_set(opt_flag, AR_Q_SEQ))
+	SET_STRING_ELT(query_seq, core_off + j, mkChar(t_args[i].query_seq.strings[j]));
+      if(bit_set(opt_flag, AR_CIG))
+	SET_STRING_ELT(cigars, core_off + j, mkChar(t_args[i].cigars.strings[j]));
+      if(bit_set(opt_flag, AR_Q_QUAL))
+	SET_STRING_ELT(qqual, core_off + j, mkChar(t_args[i].query_qual.strings[j]));
+    }
+    core_off += t_args[i].al_core.col;
+    ops_off +=  t_args[i].al_ops.col;
+    diff_off += t_args[i].diff.col;
+    mm_off += t_args[i].mm_info.col;
+
+    // and free data:
+    str_array_free( &t_args[i].query_ids );
+    if(bit_set(opt_flag, AR_Q_SEQ))
+      str_array_free( &t_args[i].query_seq );
+    if(bit_set(opt_flag, AR_CIG))
+      str_array_free( &t_args[i].cigars );
+    if(bit_set(opt_flag, AR_Q_QUAL))
+      str_array_free( &t_args[i].query_qual );
+    free( t_args[i].al_core.data );
+    free( t_args[i].al_ops.data );
+    if(bit_set(opt_flag, AR_AUX_MM))
+      free( t_args[i].mm_info.data );
+    if(bit_set(opt_flag, AR_Q_DIFF))
+      free( t_args[i].diff.data );
+  }
+  UNPROTECT(6);
+  return(ret_data);
+}
+
 // region_r: the region as:  ref_name:beg-end
 //                           or just ref
 // region_range_r: integer vector with start and end coordinates
@@ -1095,7 +1374,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   if(TYPEOF(region_range_r) != INTSXP || length(region_range_r) != 2)
     error("region_range should be an integer vector of length 2");
   int *region_range = INTEGER(region_range_r);
-  if(region_range[1] < region_range[0] || region_range[0] < 0)
+  if(region_range[1] <= region_range[0] || region_range[0] < 0)
     error("Unsorted region_range");
   const char *region = CHAR(STRING_ELT(region_r, 0));
   int target_id = sam_hdr_name2tid(bam->header, region);
@@ -1196,8 +1475,10 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   SEXP al_coord_rownames_r = PROTECT(mk_rownames( cig_ops_rownames, CIG_OPS_RN ));
 
   // For sequence variants in the reads:
-  struct i_matrix var_coord = init_i_matrix( 4, init_size );
-  SEXP var_coord_row_names_r = PROTECT(mk_rownames( (const char*[]){"al.i", "r.pos", "q.pos", "nuc"}, 4 ));
+  //  struct i_matrix var_coord = init_i_matrix( 4, init_size );
+  //  SEXP var_coord_row_names_r = PROTECT(mk_rownames( (const char*[]){"al.i", "r.pos", "q.pos", "nuc"}, 4 ));
+  struct i_matrix var_coord = init_i_matrix( Q_DIFF_RN, init_size );
+  SEXP var_coord_row_names_r = PROTECT(mk_rownames( q_diff_rownames, Q_DIFF_RN ));
   if(bit_set(opt_flag, AR_Q_DIFF))
     cig_opt.diff = &var_coord;
   // For base modification data:
@@ -1265,26 +1546,22 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 
     // then go through the cigar string and for each op create a new column
     // of offsets for the al_count
-    uint32_t *cigar = bam_get_cigar(al);
-    int32_t cigar_l = al->core.n_cigar;
+    //    uint32_t *cigar = bam_get_cigar(al);
+    //    int32_t cigar_l = al->core.n_cigar;
     int r_pos = 1 + (int)al->core.pos;
     int r_pos_0 = r_pos;
-    int q_pos = 1;
+    //    int q_pos = 1;
     int q_beg=-1;
     int q_end=0;
     int qcig_length = 0;
     size_t ops_begin_col;
     size_t ops_end_col;
-    // calculate the true query length from the cigar string
-    //    int qcig_length = 0;
-    // In order to parse MM data we need to pass the columns of the al_coord table
-    // that refer to the current alignment;
-    // parse the cigar:
     cig_opt.qseq = qseq;
     cig_opt.qqual = qqual;
     cig_opt.qseq_l = qseq ? al->core.l_qseq : 0;
+    // Parse cigar data to R tabular data
     cigar_to_table(al, al_count, &r_pos, &al_coord,
-		   &qcig_length, &q_beg, &q_end, &ops_begin_col, &ops_end_col, &cig_opt);
+		   &qcig_length, &q_beg, &q_end, &ops_begin_col, &ops_end_col, &cig_opt, 1);
 
     push_column(&al_vars, (int[AR_AL_RN]){(int)al->core.flag, r_pos_0, r_pos, q_beg, q_end, (int)al->core.qual,
 					    (int)al->core.l_qseq, qcig_length, 1+(int)ops_begin_col, (int)ops_end_col});
@@ -1382,8 +1659,6 @@ SEXP count_region_alignments(SEXP region_r, SEXP region_range_r,
   }
   if(TYPEOF(min_mq_r) != INTSXP || length(min_mq_r) != 1)
     error("min_mq_r should be an integer vector of length 1");
-  /* if(TYPEOF(min_ql_r) != INTSXP || length(min_ql_r) != 1) */
-  /*   error("min_ql_r should be an integer vector of length 1"); */
   int min_mq = asInteger(min_mq_r);
   //  int min_ql = asInteger(min_ql_r);
 
@@ -1559,7 +1834,7 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
       aux_str.s[0] = 0;
     }
     if(ret_flag & (1 << S_CIG_TABLE)){
-      cigar_to_table(b, 1+(*count), &rpos, &al_coord, &qcig_length, &q_beg, &q_end, &ops_begin, &ops_end, &cig_opt);
+      cigar_to_table(b, 1+(*count), &rpos, &al_coord, &qcig_length, &q_beg, &q_end, &ops_begin, &ops_end, &cig_opt, 1);
       push_column(&query_info, (int[]){ b->core.l_qseq, qcig_length, q_beg, q_end,
 					ops_begin, ops_end });
     }
@@ -2483,6 +2758,7 @@ static const R_CallMethodDef callMethods[] = {
   {"build_query_index", (DL_FUNC)&build_query_index, 3},
   {"query_positions", (DL_FUNC)&query_positions, 2},
   {"alignments_region", (DL_FUNC)&alignments_region, 9},
+  {"alignments_region_mt", (DL_FUNC)&alignments_region_mt, 11},
   {"count_region_alignments", (DL_FUNC)&count_region_alignments, 5},
   {"sam_read_n", (DL_FUNC)&sam_read_n, 4},
   {"sam_flag_stats", (DL_FUNC)&sam_flag_stats, 2},

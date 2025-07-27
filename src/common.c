@@ -3,6 +3,46 @@
 #include <string.h>
 #include "common.h"
 
+struct cigar_string cigar_string_init(size_t b_size){
+  struct cigar_string cs;
+  cs.buffer = malloc(b_size);
+  cs.buf_size = b_size;
+  cs.string_length = 0;
+  return(cs);
+}
+
+void cigar_string_free( struct cigar_string *cs ){
+  free(cs->buffer);
+  cs->buffer = 0;
+  cs->buf_size = 0;
+  cs->string_length = 0;
+}
+
+void cigar_string_grow( struct cigar_string *cs ){
+  cs->buf_size = cs->buf_size == 0 ? 256 : cs->buf_size * 2;
+  char *nb = malloc(cs->buf_size);
+  memcpy( nb, cs->buffer, cs->string_length );
+  free(cs->buffer);
+  cs->buffer = nb;
+}
+
+void cigar_string_read( struct cigar_string *cs, bam1_t *b ){
+  if( cs->buf_size == 0 )
+    cigar_string_grow(cs);
+  cs->string_length = 0;
+  cs->buffer[0] = 0; // NULL terminated!
+  uint32_t *cig = bam_get_cigar(b);
+  int32_t cig_l = b->core.n_cigar;
+  for(int i=0; i < cig_l; ++i){
+    char op = BAM_CIGAR_STR[ bam_cigar_op(cig[i]) ];
+    uint32_t op_l = bam_cigar_oplen( cig[i] );
+    while( cs->string_length + 2 + (size_t)log10f((float)op_l) >= cs->buf_size )
+      cigar_string_grow( cs );
+    cs->string_length += snprintf( cs->buffer + cs->string_length, cs->buf_size - cs->string_length,
+				   "%d%c", op_l, op );
+  }
+}
+
 
 struct i_matrix init_i_matrix(size_t nrow, size_t ncol){
   struct i_matrix m;
@@ -140,6 +180,13 @@ void vectori_push(struct vectori *v, int d){
   v->n++;
 }
 
+void vectori_grow_0(struct vectori *v){
+  size_t om = v->m;
+  v->m = 2 * v->m;
+  v->data = realloc(v->data, sizeof(int) * v->m);
+  memset(v->data + om, 0, sizeof(int) * om);
+}
+
 void vectori_free(struct vectori *v){
   free(v->data);
   v->data = 0;
@@ -147,6 +194,24 @@ void vectori_free(struct vectori *v){
   v->n = 0;
 }
 
+
+// this defaults to a struct with all elements set to 0;
+struct cigar_parse_options init_cigar_parse_options(){
+  struct cigar_parse_options cpo;
+  memset( &cpo, 0, sizeof(struct cigar_parse_options) );
+  // include_left_als is usually allowed
+  cpo.include_left_als = 1;
+  return(cpo);
+}
+
+alignments_region_mt_args init_ar_args(){
+  alignments_region_mt_args args;
+  memset(&args, 0, sizeof(alignments_region_mt_args));
+  args.cig_opt = init_cigar_parse_options();
+  args.imatrix_initial_size = OPS_INIT_SIZE;
+  args.extra_depth_isize = OPS_INIT_SIZE;
+  return(args);
+}
 
 
 // This allocates new words; that may or may not be what you want

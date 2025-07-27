@@ -3,8 +3,13 @@
 
 #include <R.h>
 #include <Rinternals.h>
+#include <htslib/sam.h>
+#include <htslib/hts.h>
+#include <pthread.h>
+#include "kvec.h"
 
 // Useful constants:
+#define MAX_THREADS 64
 
 // Numeric cigar string operations are defined in sam.h
 // mapping 0-9 to:
@@ -56,6 +61,9 @@ static const char* ar_al_rownames[AR_AL_RN] = {"flag", "r.beg", "r.end", "q.beg"
 #define OPS_INIT_SIZE 256
 static const char* cig_ops_rownames[CIG_OPS_RN] = {"al.i", "op", "type", "r0", "q0", "r1", "q1", "op.l"};
 
+#define Q_DIFF_RN 4
+static const char* q_diff_rownames[Q_DIFF_RN] = {"al.i", "r.pos", "q.pos", "nuc"};
+
 // The fields of base modification information (MM)
 #define MM_INFO_RN 7
 static const char* mm_info_rownames[MM_INFO_RN] = {"al.i", "q.pos", "mod", "mod.n", "mod.l", "r.pos", "base.inf"};
@@ -100,7 +108,6 @@ static const unsigned int R_ret_types[SRN_VEC_FIELDS_N] = {STRSXP, INTSXP, INTSX
 							   STRSXP, INTSXP, INTSXP, INTSXP, // CIGAR, RNEXT, PNEXT, TLEN
 							   STRSXP, STRSXP, STRSXP}; // SEQ, QUAL, AUX
 
-
 // Nibble -> IUPAC mapping
 // Seems like this should be in an htslib header somewhere,
 // but I haven't foud it.
@@ -109,6 +116,25 @@ static const unsigned int R_ret_types[SRN_VEC_FIELDS_N] = {STRSXP, INTSXP, INTSX
 static const char *nuc_encoding = "=ACMGRSVTWYHKDBN";
 // if we want to reverse complement
 static const char *nuc_encoding_rc = "=TGKCYSBAWRDMHVN";
+
+// The cigar_string struct is probably completely un-necessary
+// I suspect that there is an htslib function that I can use to get
+// rid of it. But for now leave it here.
+struct cigar_string {
+  char *buffer;
+  size_t string_length; // not including the 0
+  size_t buf_size;
+};
+
+struct cigar_string cigar_string_init(size_t b_size);
+
+void cigar_string_free( struct cigar_string *cs );
+
+void cigar_string_grow( struct cigar_string *cs );
+
+void cigar_string_read( struct cigar_string *cs, bam1_t *b );
+
+
 
 // These are structures for dynamically growing a return data set;
 // They would be better off in a library somewhere as I keep repeating
@@ -177,12 +203,76 @@ struct vectori {
 
 // Functions to initialise push and free;
 struct vectori vectori_init(size_t size);
+struct vectori vectori_init_0(size_t size);
 void vectori_push(struct vectori *v, int d);
+void vectori_grow_0(struct vectori *v);
 void vectori_free(struct vectori *v);
     
 
+// Options taken by cigar_to_table
+// depth: if not NULL, pointer for sequence depth
+// i_depth; intron_depth
+// depth_l: length of depth and i_depth arrays
+//
+// extra_depth and include_left_als are only relevant to
+// multithreaded parsing. See alignments_region_mt_args
+// for details.
+struct cigar_parse_options {
+  int *depth, *i_depth;
+  int depth_begin;
+  int include_left_als;
+  int max_intron_length;
+  size_t depth_l;
+  char *qseq;
+  char *qqual;
+  size_t qseq_l;
+  const char *rseq;
+  size_t rseq_l;
+  struct i_matrix *diff, *mm_info;
+};
 
-// split_strong
+// this defaults to a struct with all elements set to 0;
+struct cigar_parse_options init_cigar_parse_options();
+
+
+// The arguments needed to parse bam files in parallel:
+typedef struct alignments_region_mt_args {
+  // Variables that should be set by the calling thread:
+  int start, end; // the range
+  const char *bam_file;
+  const char *bam_index_file;
+  int target_id;
+  struct cigar_parse_options cig_opt;
+  size_t imatrix_initial_size;
+  size_t extra_depth_isize; // the initial depth size. 
+
+  // Variables that will be initialised in the child thread:
+  samFile *sam;
+  hts_idx_t *index;
+  hts_itr_t *bam_it;   // an initialised bam iterator
+  uint32_t opts;  // what to return;
+  uint32_t *flag_filter; // required and banned flags
+
+  // Data not using the cigar string: these are global and need to be
+  // protected by mutex structures when they are updated. Unfortunately
+  // They need to be updated in a single go; that means a single mutex
+  // to hold them all; Hence prepare all data first and then add to them.
+  // If this seems to be a problem, then we can make local copies and do
+  // post merging.
+  //  pthread_mutex_t *mutex_core;
+  struct str_array query_ids;
+  struct str_array query_seq;
+  struct str_array query_qual;
+  struct str_array cigars;
+  struct i_matrix al_core; // flag, r.beg, r.edn, q.beg, q.end, mqual, qlen, qclen, ops.0, ops.1
+  struct i_matrix al_ops;
+  // pointers to these will be placed in cig_opt
+  struct i_matrix diff, mm_info;
+} alignments_region_mt_args;
+
+alignments_region_mt_args init_ar_args();
+
+// split_string
 // str: the string to be split (0 terminated)
 // delim: the char to split by
 // n: a pointer to an integer whose value will be set to the number of strings

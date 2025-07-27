@@ -79,6 +79,25 @@ aligned.region <- function(region, range, bam.ptr, transpose=TRUE, flag.filter=c
     tmp
 }
 
+aligned.region.mt <- function(bam.f, bam.f.index, region, range, transpose=TRUE,
+                              nthreads=1L, flag.filter=c(0,0),
+                              opt.flag=0L, ref.seq="", min.mq=0, min.ql=0, max.intron.length=4096L){
+    tmp <- .Call("alignments_region_mt",
+          bam.f, bam.f.index, region, as.integer(range), as.integer(flag.filter),
+          as.integer(opt.flag), ref.seq, as.integer(min.mq), as.integer(min.ql),
+          as.integer(max.intron.length), as.integer(nthreads))
+    if(transpose){
+        tmp <- lapply(tmp, function(x){
+            if( length(dim(x)) == 2 )
+                return(t(x))
+            x
+        })
+    }
+    ## we could consider to merge query and al, into a data.frame
+    ## but there is not that much point
+    tmp
+}
+
 count.alignments <- function(region, range, bam.ptr, flag.filter=c(-1,-1), min.mq=0){
     .Call("count_region_alignments",
           region, as.integer(range), bam.ptr,

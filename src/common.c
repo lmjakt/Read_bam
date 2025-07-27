@@ -213,6 +213,19 @@ alignments_region_mt_args init_ar_args(){
   return(args);
 }
 
+alignments_merge_args init_ar_merge_args(){
+  alignments_merge_args args;
+  memset(&args, 0, sizeof(alignments_merge_args));
+  return(args);
+}
+
+void arm_set_offsets(alignments_merge_args *args,
+		     size_t core_off, size_t ops_off, size_t diff_off, size_t mm_off){
+  args->core_off = core_off;
+  args->ops_off = ops_off;
+  args->diff_off = diff_off;
+  args->mm_off = mm_off;
+}
 
 // This allocates new words; that may or may not be what you want
 // to do;

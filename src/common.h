@@ -272,6 +272,20 @@ typedef struct alignments_region_mt_args {
 
 alignments_region_mt_args init_ar_args();
 
+typedef struct alignments_merge_args {
+  int *al_core;
+  int *al_ops;
+  int *diff;
+  int *mm;
+
+  struct alignments_region_mt_args t_args;
+  size_t core_off, ops_off, diff_off, mm_off;
+} alignments_merge_args;
+
+alignments_merge_args init_ar_merge_args();
+void arm_set_offsets(alignments_merge_args *args,
+		     size_t core_off, size_t ops_off, size_t diff_off, size_t mm_off);
+
 // split_string
 // str: the string to be split (0 terminated)
 // delim: the char to split by

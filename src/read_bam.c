@@ -1097,7 +1097,9 @@ void *alignments_region_thread(void *v_args){
   free(cig_opts->qseq);
   cig_opts->qseq = 0;
   free(cigars_string.buffer);
+  bam_destroy1(al);
   hts_idx_destroy(args->index);
+  hts_itr_destroy(args->bam_it);
   sam_close(args->sam);
   pthread_exit((void*)args);
 }
@@ -1154,19 +1156,7 @@ SEXP alignments_region_mt(SEXP bam_file_r, SEXP index_file_r,
     error("index_file_r should contain a single string giving the name of the bam index file");
   const char *bam_file = CHAR(STRING_ELT( bam_file_r, 0 ));
   const char *index_file = CHAR(STRING_ELT( index_file_r, 0 ));
-  // Test that we can open these:
-  samFile *tmp_sam = sam_open( bam_file, "r" );
-  if(!tmp_sam)
-    error("alignments_region_mt: unable to open bam file: %s", bam_file);
-  hts_idx_t *tmp_index = sam_index_load(tmp_sam, index_file);
-  if(!tmp_index){
-    sam_close(tmp_sam);
-    error("alignments_region_mt: Unable to load index from %s", index_file);
-  }
-  sam_hdr_t *sam_header = sam_hdr_read(tmp_sam);
-  hts_idx_destroy(tmp_index);
-  sam_close(tmp_sam);
-  
+
   if(TYPEOF(n_threads_r) != INTSXP || length(n_threads_r) != 1)
     error("n_threads_r should be an integer vector of length 1");
   int n_threads = INTEGER(n_threads_r)[0];
@@ -1191,7 +1181,27 @@ SEXP alignments_region_mt(SEXP bam_file_r, SEXP index_file_r,
   if(region_range[1] <= region_range[0] || region_range[0] < 0)
     error("Unsorted region_range");
   const char *region = CHAR(STRING_ELT(region_r, 0));
+
+  // open files temporarily to get a target id:
+  samFile *tmp_sam = sam_open( bam_file, "r" );
+  if(!tmp_sam)
+    error("alignments_region_mt: unable to open bam file: %s", bam_file);
+  hts_idx_t *tmp_index = sam_index_load(tmp_sam, index_file);
+  if(!tmp_index){
+    sam_close(tmp_sam);
+    hts_idx_destroy(tmp_index);
+    error("alignments_region_mt: Unable to load index from %s", index_file);
+  }
+  // we will use the header further below; destroy index and other later
+  // at the same point. Note that any errors here have the potential to cause problems.
+  sam_hdr_t *sam_header = sam_hdr_read(tmp_sam);
   int target_id = sam_hdr_name2tid(sam_header, region);
+  // then destroy all the temporary values.
+  sam_hdr_destroy(sam_header);
+  sam_header = 0;
+  hts_idx_destroy(tmp_index);
+  sam_close(tmp_sam);
+  
   if(target_id < 0){
     warning("Unable to find target id for specified region: %s", region);
     return(R_NilValue);

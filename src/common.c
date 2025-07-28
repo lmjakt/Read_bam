@@ -209,7 +209,7 @@ alignments_region_mt_args init_ar_args(){
   memset(&args, 0, sizeof(alignments_region_mt_args));
   args.cig_opt = init_cigar_parse_options();
   args.imatrix_initial_size = OPS_INIT_SIZE;
-  args.extra_depth_isize = OPS_INIT_SIZE;
+  //  args.extra_depth_isize = OPS_INIT_SIZE;
   return(args);
 }
 

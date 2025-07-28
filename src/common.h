@@ -244,14 +244,16 @@ typedef struct alignments_region_mt_args {
   int target_id;
   struct cigar_parse_options cig_opt;
   size_t imatrix_initial_size;
-  size_t extra_depth_isize; // the initial depth size. 
+  uint32_t opts;  // what to return;
+  uint32_t *flag_filter; // required and banned flags
+  int min_mq; // minimum mapping quality
+  int min_ql; // minimum query length;
+  ///  size_t extra_depth_isize; // the initial depth size. 
 
   // Variables that will be initialised in the child thread:
   samFile *sam;
   hts_idx_t *index;
   hts_itr_t *bam_it;   // an initialised bam iterator
-  uint32_t opts;  // what to return;
-  uint32_t *flag_filter; // required and banned flags
 
   // Data not using the cigar string: these are global and need to be
   // protected by mutex structures when they are updated. Unfortunately

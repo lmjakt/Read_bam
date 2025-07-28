@@ -1050,6 +1050,8 @@ void *alignments_region_thread(void *v_args){
   int q_beg, q_end;
   size_t ops_begin_col, ops_end_col;
   while((ret=sam_itr_next(args->sam, args->bam_it, al)) >= 0){
+    if(al->core.l_qseq < args->min_ql || al->core.qual < args->min_mq)
+      continue;
     int rpos_0 = 1 + (int)al->core.pos;
     int do_push = rpos_0 >= start || cig_opts->include_left_als;
     int rpos_1 = rpos_0;
@@ -1271,6 +1273,8 @@ SEXP alignments_region_mt(SEXP bam_file_r, SEXP index_file_r,
   args_p.flag_filter = flag_filter;
   args_p.cig_opt = cig_opt;
   args_p.opts = opt_flag;
+  args_p.min_mq = min_mq;
+  args_p.min_ql = min_ql;
   int sub_range = region_length / n_threads;
   int start = region_range[0];
   int rem = region_length % n_threads;
@@ -1519,10 +1523,6 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   // We use sam_itr_queryi, so that we can specify the region
   // numerically thus also allowing the same function to return the sequence depth for the region.
   hts_itr_t *b_itr = sam_itr_queryi(bam->index, target_id, region_range[0], region_range[1]);
-  // hts_itr_destroy( ) not called on this anywhere
-  // hts_itr_destroy() is defined in hts.h; which suggests we should be using it.
-  // The string version used previously:
-  //  hts_itr_t *b_itr = sam_itr_querys(bam->index, bam->header, region);
   // al should be destroyed with bam_destroy1
   bam1_t *al = bam_init1();
   int r=0;
@@ -1569,7 +1569,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
   unsigned char *qqual=0; //
   
   while((r=sam_itr_next(bam->sam, b_itr, al)) >= 0){
-    qseq = qqual = 0;
+    qseq = 0, qqual = 0;
     uint32_t flag = (uint32_t)al->core.flag;
     // any bits set in flag_filter[0] must also be set in flag
     if((flag & flag_filter[0]) != flag_filter[0])
@@ -1606,7 +1606,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
       if(qqual == 0)
 	qqual = bam_get_qual(al);
       if(qqual)
-	str_array_push_cp_n(&query_qual, qqual, al->core.l_qseq);
+	str_array_push_cp_n(&query_qual, (const char*)qqual, al->core.l_qseq);
       else
 	str_array_push_cp(&query_qual, "*");
     }
@@ -1625,7 +1625,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     size_t ops_begin_col;
     size_t ops_end_col;
     cig_opt.qseq = qseq;
-    cig_opt.qqual = qqual;
+    cig_opt.qqual = (char*)qqual;
     cig_opt.qseq_l = qseq ? al->core.l_qseq : 0;
     // Parse cigar data to R tabular data
     cigar_to_table(al, al_count, &r_pos, &al_coord,

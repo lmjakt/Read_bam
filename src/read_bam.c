@@ -166,8 +166,8 @@ size_t bam_aux_string(bam1_t *b, kstring_t *str){
   // here we ignore that, but it is something that should be handled.
   return(str->l);
  bad_aux:
-  warning("Corrupted aux data for read %.*s",
-	  b->core.l_qname, bam_get_qname(b));
+  /* warning("Corrupted aux data for read %.*s", */
+  /* 	  b->core.l_qname, bam_get_qname(b)); */
   //  errno = EINVAL;
   return -1;
 }
@@ -197,7 +197,7 @@ uint8_t *get_ml_code(uint8_t *data, uint32_t *mod_code, int *mod_n, char *skip_i
     return(0);
   }
   if(i > 4){
-    warning("No more than four modifications per position allowed");
+    //    warning("No more than four modifications per position allowed");
     return(0);
   }
   *skip_info = data[i];
@@ -283,12 +283,12 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   // the loop condition and the direction of change. But lets try separately first.
   q_pos = 1 + q_len - q_pos;
   if(q_pos < 0){
-    warning("Obtained a negative query position: %d for q_len %d", q_pos, q_len);
+    //    warning("Obtained a negative query position: %d for q_len %d", q_pos, q_len);
     return(-1);
   }
   while( *col_i >= beg ){
     if(*col_i >= ops->col){
-      warning("Inappropriate value of *col_i (negative?): %ld", *col_i);
+      //      warning("Inappropriate value of *col_i (negative?): %ld", *col_i);
       return(-1);
     }
     int *coords = ops->data + (*col_i) * ops->nrow;
@@ -354,11 +354,9 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   // but that would just move the problem downstream.
   //
   if(mod_data->nrow != MM_INFO_RN){
-    warning("parse_MM_string: mod_data should have %d rows", MM_INFO_RN);
     return;
   }
   if(ops_beg >= ops_end || ops_end > cig_ops->col){
-    warning("cigar op rows out of range: %ld -> %ld but only %ld columns of data", ops_beg, ops_end, cig_ops->col);
     return;
   }
   int mod_data_begin = mod_data->col; 
@@ -367,7 +365,6 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   uint32_t *cigar = bam_get_cigar(b);
   // Remove any with hard clipping set.
   if(bam_cigar_op(cigar[0]) == BAM_CHARD_CLIP || cig_ops->data[ (ops_end-1) * cig_ops->nrow + 1 ] == BAM_CHARD_CLIP){
-    warning("MM parsing not possible for hard clipped sequences");
     return;
   }
   int is_fwd = (b->core.flag & 16) ? 0 : 1;
@@ -403,7 +400,6 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   // The modification code should start at mm+5; this must not be past the end of the
   // auxiliary data since we directly take the address.
   if(mm + 5 >= end){
-    warning("Modification code data after end of auxiliary string for: %s", bam_get_qname(b));
     return;
   }
   // the type for MM should be Z. We don't know how many positions we are going
@@ -412,7 +408,6 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   // The mm : "MMZ" Followed by:
   // ([ACGTUN][-+]([a-z]+|[0-9]+)[.?]?(,[0-9]+)*;)*
   if(mm[2] != 'Z'){
-    warning("Did not find Z after MM");
     return;
   }
   char nuc = mm[3];
@@ -422,13 +417,9 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   char skip_info;
   int mod_n;
   uint8_t *data = get_ml_code(mm + 5, &mod_code, &mod_n, &skip_info);
-  if(data == 0){
-    warning("No MM data obtained for query: %s", bam_get_qname(b));
-  }
   uint8_t *seq_data = bam_get_seq(b);
   uint8_t *seq_qual = bam_get_qual(b);
   if(seq_data == 0 || seq_qual == 0){
-    warning("No sequence or quality data for: %s", bam_get_qname(b));
     return;
   }
   uint32_t nuc_info = 0; // will hold, ref, query base and query quality
@@ -459,7 +450,6 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
     // seq_i is one based; this means that it should be OK for it to be equal
     // to seq_l
     if(seq_i > seql){
-      warning("position exceeded sequence in %s %d --> %d >= %d", bam_get_qname(b), nb, seq_i, seql);
       break;
     }
     // At this point the base at seq_i should be nuc; and should
@@ -505,27 +495,25 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   // mm is encoded as ML:B:C, that is as single bytes; we may have more than one if
   // mod_n > 1. Should not be more than 4.
   if(ml[2] != 'B'){
-    warning("Expected B in ML auxiliary data");
     return;
   }
   if(ml[3] != 'C'){
-    warning("Expected a C in ML auxiliary data but got %c", ml[3]);
     return;
   }
   // An auxiliary with a B type has the following structure:
   // [tag:2 bytes][B: 1 byte][ c|C|s|S|i|I|f 1 byte ][ count: 4 bytes (int) ]
   // Hence we get the number of entries at ml + 4
   uint32_t ml_count = *((int32_t*)(ml + 4));
-  if(ml_count != mod_pos_count)
-    warning("parse_MM: ml_count (%d) does not equal mod_pos_count (%d) for %s\n(end - ml = %ld)",
-	    ml_count, mod_pos_count, bam_get_qname(b), end-ml);
+  //  if(ml_count != mod_pos_count)
+    /* warning("parse_MM: ml_count (%d) does not equal mod_pos_count (%d) for %s\n(end - ml = %ld)", */
+    /* 	    ml_count, mod_pos_count, bam_get_qname(b), end-ml); */
   // And the quality (likelihood of modification data) starts at ml + 8
   uint8_t *qual = ml + 8;
   uint32_t i=0;
   int col = mod_data_begin;
   while(i < ml_count){
     if(col >= mod_data->col){
-      warning("exceeded the number of columns in mod_data");
+      //      warning("exceeded the number of columns in mod_data");
       break;
     }
     int *col_data = mod_data->data + col * mod_data->nrow;
@@ -537,9 +525,9 @@ void parse_MM_string(bam1_t *b, uint8_t *s, struct i_matrix *mod_data, int al_i,
   }
   // At this point we have certain expectations. For example
   // col should be equal to mod_data->col.
-  if( col != mod_data->col ){
-    warning("col %d is not equal to mod_data->col %ld for %s", col, mod_data->col, bam_get_qname(b));
-  }
+  /* if( col != mod_data->col ){ */
+  /*   warning("col %d is not equal to mod_data->col %ld for %s", col, mod_data->col, bam_get_qname(b)); */
+  /* } */
   return;
 }
 
@@ -573,13 +561,19 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
   // use a 1-based coordinate system instead of a 0-based one
   // for consistency with R and aligned_regions
   *r_pos = 1 + (int)al->core.pos;
+  // q_pos refers to the actual position in the original query string (in
+  // 1-based coordinates) and will be returned as part of the ops table
+  // If the sequence has been hard clipped, then we will not have a record
+  // of it in this alignment record. In this case we need to adjust for the
+  // hard clipping to get the corect position.
   int q_pos = 1;
+  int h_clip = 0;
   *qcig_length = 0;
   *q_beg = 1;
   *q_end = 0;
 
   uint32_t *cigar = bam_get_cigar(al);
-  int32_t cigar_l = al->core.n_cigar;
+  uint32_t cigar_l = al->core.n_cigar;
   if(cigar_l < 1)
     return;
   // if we have clipping set q_beg appropriately:
@@ -589,20 +583,24 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
     // If the first cigar op is hard clip, then it _should_ guarantee the presence
     // of a second cigar op; hence we should not need to check the cigar length here.
     *q_beg += bam_cigar_op(cigar[1]) == BAM_CSOFT_CLIP ? bam_cigar_oplen(cigar[1]) : 0;
+    h_clip = bam_cigar_oplen( cigar[0] );
   }
   
   *ops_beg = al_coord->col;
   int r0, q0;
-  for(int i=0; i < cigar_l; ++i){
+  for(uint32_t i=0; i < cigar_l; ++i){
     // if operation is H also increment the qcig_length
-    int type = bam_cigar_type(cigar[i]);
-    int op = bam_cigar_op(cigar[i]);
-    int op_length = bam_cigar_oplen( cigar[i] );
-    if( type & 1 || op == BAM_CHARD_CLIP )
-      *qcig_length += op_length;
+    uint32_t type = bam_cigar_type(cigar[i]);
+    uint32_t op = bam_cigar_op(cigar[i]);
+    uint32_t op_length = bam_cigar_oplen( cigar[i] );
     r0 = *r_pos;
     q0 = q_pos;
-    q_pos += type & 1 ? op_length : 0;
+    
+    if( type & 1 || op == BAM_CHARD_CLIP ){
+      *qcig_length += op_length;
+      q_pos += op_length;
+    }
+    //q_pos += (type & 1) || op == BAM_CHARD_CLIP ? op_length : 0;
     *r_pos += type & 2 ? op_length : 0;
     if(op == BAM_CMATCH)
       *q_end = q_pos;
@@ -610,11 +608,13 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
       push_column( al_coord, (int[]){ al_i, op, type, r0, q0, *r_pos, q_pos, op_length } );
     if((opts->depth || opts->diff) && op == BAM_CMATCH){
       // the r0 and q0 coordinates are 1 based; we need to adjust for this
-      for(int j=0; j < op_length; ++j){
-	size_t r = r0 + j - 1;
-	size_t q = q0 + j - 1;
+      for(uint32_t j=0; j < op_length; ++j){
+	size_t r = (r0 + j) - 1;
+	size_t q = (q0 + j) - (1 + h_clip);
 	size_t d_o = r - opts->depth_begin;
-	if(d_o < opts->depth_l) ++opts->depth[d_o];
+	// negative coordinates should overflow and hence be larger than the buffers
+	// unless these are extremely large (close to the limit of size_t)
+	if(opts->depth && d_o < opts->depth_l) ++opts->depth[d_o];
 	if(!do_push)
 	  continue;
 	// Here I assume that if qseq_l is set then qseq will also be set
@@ -2454,23 +2454,23 @@ SEXP extract_aux_tags(SEXP aux_r, SEXP aux_tags_r, SEXP aux_types_r){
 
 SEXP qpos_to_ref_pos(SEXP qpos_r, SEXP ops_r){
   if(TYPEOF(qpos_r) != INTSXP || TYPEOF(ops_r) != INTSXP){
-    warning("qpos_to_ref_pos: both arguments should be integer matrices");
+    //    warning("qpos_to_ref_pos: both arguments should be integer matrices");
     return(R_NilValue);
   }
   SEXP qpos_dim_r = getAttrib(qpos_r, R_DimSymbol);
   SEXP ops_dim_r =  getAttrib(ops_r, R_DimSymbol);
   if(length(qpos_dim_r) != 2 || length(ops_dim_r) != 2){
-    warning("qpos_to_ref_pos: both arguments should be matrices");
+    //    warning("qpos_to_ref_pos: both arguments should be matrices");
     return(R_NilValue);
   }
   int *qpos_dim = INTEGER(qpos_dim_r);
   int *ops_dim = INTEGER(ops_dim_r);
   if(qpos_dim[0] < 1 || qpos_dim[1] != 5){
-    warning("The query positions table must have at least one row and exactly five columns");
+    //    warning("The query positions table must have at least one row and exactly five columns");
     return(R_NilValue);
   }
   if(ops_dim[0] != CIG_OPS_RN || ops_dim[1] < 1){
-    warning("The ops table should have exactly 8 rows and at least one column");
+    //    warning("The ops table should have exactly 8 rows and at least one column");
     return(R_NilValue);
   }
   struct i_matrix ops = init_i_matrix(ops_dim[0], ops_dim[1]);
@@ -2491,7 +2491,7 @@ SEXP qpos_to_ref_pos(SEXP qpos_r, SEXP ops_r){
   int in_clipped = 2; // try to assign to the adjacent region if position is not in an M operation
   for(int i=0; i < qpos_dim[0]; ++i){
     if(ops_begin[i] < 0 || ops_begin[i] > ops_end[i] || ops_end[i] > ops_dim[1]){
-      warning("Inappropriate ops_begin or ops_end values: %d  %d skipping", ops_begin[i], ops_end[i]);
+      //      warning("Inappropriate ops_begin or ops_end values: %d  %d skipping", ops_begin[i], ops_end[i]);
       continue;
     }
     // ops_begin[i]-1, because the table has been passed from R.

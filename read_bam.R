@@ -4,7 +4,8 @@ if(is.loaded("load_bam"))
     dyn.unload( paste(dirname(sys.frame(1)$ofile), "src/read_bam.so", sep="/") )
 dyn.load( paste(dirname(sys.frame(1)$ofile), "src/read_bam.so", sep="/") )
 
-load.bam <- function(bam, bam.index=paste0(bam, ".bai")){
+load.bam <- function(bam, bam.index=paste0(bam, c(".bai", ".csi"))){
+    bam.index=(bam.index[ file.exists(bam.index) ])[1]
     .Call("load_bam", bam, bam.index);
 }
 
@@ -79,9 +80,12 @@ aligned.region <- function(region, range, bam.ptr, transpose=TRUE, flag.filter=c
     tmp
 }
 
-aligned.region.mt <- function(bam.f, bam.f.index, region, range, transpose=TRUE,
+aligned.region.mt <- function(bam.f, bam.f.index=paste0(bam.f, c(".bai", ".csi")), region, range, transpose=TRUE,
                               nthreads=1L, flag.filter=c(0,0),
                               opt.flag=0L, ref.seq="", min.mq=0, min.ql=0, max.intron.length=4096L){
+    bam.f.index=(bam.f.index[ file.exists(bam.f.index) ])[1]
+    if(is.na(bam.f.index))
+        stop("No valid index specified")
     tmp <- .Call("alignments_region_mt",
           bam.f, bam.f.index, region, as.integer(range), as.integer(flag.filter),
           as.integer(opt.flag), ref.seq, as.integer(min.mq), as.integer(min.ql),

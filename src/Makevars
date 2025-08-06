@@ -8,12 +8,18 @@
 ##    about it.
 ##    R seems to include /usr/local/include by default, so I don't
 ##    need to do anything about it.
+
+PKG_CPPFLAGS = -pthread
+
 ##
 ## CFLAGS=-lhts
 ##    This tells gcc (the compiler) that the executable should be linked
 ##    against the libhts library. This is a non-standard requirement and
 ##    to make sure that the R includes it we need the following line.
-PKG_LIBS=-lhts
+
+PKG_LIBS=-lhts -pthread
+
+
 
 ## The linking to libhts is done when dyn.load() is run from R. For it
 ## to work, the system linker needs to be able to find it. For most programs

@@ -80,9 +80,9 @@ aligned.region <- function(region, range, bam.ptr, transpose=TRUE, flag.filter=c
     tmp
 }
 
-aligned.region.mt <- function(bam.f, bam.f.index=paste0(bam.f, c(".bai", ".csi")), region, range, transpose=TRUE,
-                              nthreads=1L, flag.filter=c(0,0),
-                              opt.flag=0L, ref.seq="", min.mq=0, min.ql=0, max.intron.length=4096L){
+aligned.region.mt <- function(bam.f, region, range, opt.flag=0L, nthreads=1L, flag.filter=c(0,0),
+                              ref.seq="", min.mq=0, min.ql=0, max.intron.length=4096L,
+                              transpose=TRUE, bam.f.index=paste0(bam.f, c(".bai", ".csi"))){
     bam.f.index=(bam.f.index[ file.exists(bam.f.index) ])[1]
     if(is.na(bam.f.index))
         stop("No valid index specified")
@@ -195,7 +195,7 @@ nuc.table <- function(){
 
 ## the default will return all of the flag names
 sam.flags <- function(flags=0xFFFF){
-    decoded <- lapply( flags, function(x){ (1:12)[ as.logical( bitwAnd(2^(1:11), x) )] })
+    decoded <- lapply( flags, function(x){ (1:12)[ as.logical( bitwAnd(2^(0:11), x) )] })
     strings <- .Call("bam_flag", as.integer(flags))
     lapply( 1:length(decoded), function(i){
         data.frame( bit=decoded[[i]], flag=strsplit(strings[i], ",")[[1]], value=2^(decoded[[i]]-1) )

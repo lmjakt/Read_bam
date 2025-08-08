@@ -317,6 +317,37 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   return(-1);
 }
 
+// 
+// This should be replaced with a function allowing the extraction
+// of arbitrary auxiliary data; but I do not have sufficient time
+// right now.
+// AS: alignment score
+// NM: edit distance
+// NH: number of reported alignments
+// IH: query hit total counts
+// AS and NM appear common; NH and IH seem useful. This is experimental
+// and should be replaced at some point later on.. 
+void extract_int_aux_values(bam1_t *b, int *AS, int *NM, int *NH, int *IH){
+  // actually I should use
+  // bam_aux_get() and bam_aux2i() here
+  const char as[4][2] = {"AS", "NM", "NH", "IH"};
+  int *ret[4] = {AS, NM, NH, IH};
+  for(int i=0; i < 4; ++i){
+    *ret[i] = R_NaInt;
+    uint8_t *s = bam_aux_get(b, as[i]);
+    if(!s)
+      continue;
+    // NOTE: bam_aux2i returns a int64_t; but R does not have int64
+    //       and it is unlikely that we will need it for the tags used
+    //       here.
+    // bam_aux2i returns 0 if there was an error; detecting the error
+    // requires checking the errno. 
+    errno = 0;
+    int64_t v = bam_aux2i(s);
+    *ret[i] = (errno != EINVAL) ? (int)v : R_NaInt;
+  }
+}
+
 // parse MM AND ML strings; fill a  matrix with values;
 // 
 // This function assumes that all information will be contained within a single
@@ -861,7 +892,6 @@ int read_next_entry( struct bam_ptrs *bam, bam1_t *b){
   return( sam_read1(bam->sam, bam->header, b) );
 }
 
-// Single region only supported at first.
 // if( opt_flag & 1 ) ==> parse cigar data.
 SEXP build_query_index(SEXP bam_ptr_r, SEXP region_r, SEXP opt_flag_r){
   struct bam_ptrs *bam = extract_bam_ptr(bam_ptr_r);
@@ -1076,11 +1106,16 @@ void *alignments_region_thread(void *v_args){
     cigar_to_table(al, al_i, &rpos_1, &args->al_ops,
 		   &qcig_length, &q_beg, &q_end, &ops_begin_col, &ops_end_col, cig_opts, do_push);
 
+
+    // Extract standard auxiliary fields; note this is still experimental;
+    int AS, NM, NH, IH;
+    extract_int_aux_values(al, &AS, &NM, &NH, &IH);
+
     if(do_push){
       // {0:flag, 1:r.beg, 2:r.end, 3:q.beg, 4:q.end, 5:mqual, 6:qlen, 7:qclen, 8:ops.0, 9:ops.1}
       push_column(&args->al_core, (int[AR_AL_RN]){flag, rpos_0, rpos_1, q_beg, q_end, (int)al->core.qual,
-						  (int)al->core.l_qseq, qcig_length, 1+ops_begin_col,
-						  ops_end_col});
+						    (int)al->core.l_qseq, qcig_length, 1+ops_begin_col,
+						    ops_end_col, AS, NM, NH, IH});
       str_array_push_cp(&args->query_ids, bam_get_qname(al));
       // optional fields:
       if(bit_set(opt_flag, AR_Q_SEQ))
@@ -1641,8 +1676,13 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     cigar_to_table(al, al_count, &r_pos, &al_coord,
 		   &qcig_length, &q_beg, &q_end, &ops_begin_col, &ops_end_col, &cig_opt, 1);
 
+    // Extract standard auxiliary fields; note this is still experimental;
+    int AS, NM, NH, IH;
+    extract_int_aux_values(al, &AS, &NM, &NH, &IH);
+
     push_column(&al_vars, (int[AR_AL_RN]){(int)al->core.flag, r_pos_0, r_pos, q_beg, q_end, (int)al->core.qual,
-					    (int)al->core.l_qseq, qcig_length, 1+(int)ops_begin_col, (int)ops_end_col});
+					    (int)al->core.l_qseq, qcig_length, 1+(int)ops_begin_col, (int)ops_end_col,
+					    AS, NM, NH, IH});
     // We should modify the function so that we do not malloc and free for every query
     // sequence.
     // qseq may be 0, but that should be safe to free.

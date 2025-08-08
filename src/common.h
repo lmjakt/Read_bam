@@ -53,8 +53,9 @@
 static const char* ar_return_fields[AR_R_FIELDS_N] = {"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual", "mm", "intron.depth"};
 
 // The number of rows in an alignments table ($al)
-#define AR_AL_RN 10
-static const char* ar_al_rownames[AR_AL_RN] = {"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen", "qclen", "ops.0", "ops.1"};
+#define AR_AL_RN 14
+static const char* ar_al_rownames[AR_AL_RN] = {"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen",
+					       "qclen", "ops.0", "ops.1", "AS", "NM", "NH", "IH"};
 
 // The number of rows in an cigar operations table
 #define CIG_OPS_RN 8
@@ -125,6 +126,9 @@ struct cigar_string {
   size_t string_length; // not including the 0
   size_t buf_size;
 };
+
+// Data structures to be used in conjunction with kvec and similar
+
 
 struct cigar_string cigar_string_init(size_t b_size);
 

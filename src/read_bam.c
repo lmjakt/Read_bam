@@ -348,6 +348,26 @@ void extract_int_aux_values(bam1_t *b, int *AS, int *NM, int *NH, int *IH){
   }
 }
 
+// Returns expected number of erros in query sequence based on
+// a Poisson approximation of the Poisson binomial distribution
+// The return value is expressed as (256 * expected_number) in order
+// to provide non-integral numbers. 256 was chosen because of its
+// similarity with ML (modification likelihood) encoding and because
+// of the low likelihood of overflow (2^31 / 2^8 = 2^23; i.e. an
+// overflow will not happen in R unless there are 2^23 or more expected
+// errors; that's 8 million errors.)
+//
+// The length argument uses int32_t becaus this is the type held by a
+// bam1_t objectl
+int32_t estimate_read_errors(const unsigned char* qual, int32_t ql){
+  const double mult = 256;
+  double err_n = 0;
+  for(int32_t i=0; i < ql; ++i){
+    err_n += pow(10, (-((double)qual[i]) / 10.0));
+  }
+  return((int32_t)( err_n * mult ));
+}
+
 // parse MM AND ML strings; fill a  matrix with values;
 // 
 // This function assumes that all information will be contained within a single
@@ -950,6 +970,10 @@ SEXP build_query_index(SEXP bam_ptr_r, SEXP region_r, SEXP opt_flag_r){
   int count = 0;
   while((ret=sam_itr_next(bam->sam, b_itr, al)) >= 0){
     int flag = al->core.flag;
+    // check that the segment is not unmapped; somehow it seems that unmapped segments
+    // can be assigned locations;
+    if(flag & 0x4)
+      continue;
     int rpos_0 = 1 + (int)al->core.pos;
     int rpos_1 = rpos_0;
     int qpos_0 = 1;
@@ -1106,16 +1130,17 @@ void *alignments_region_thread(void *v_args){
     cigar_to_table(al, al_i, &rpos_1, &args->al_ops,
 		   &qcig_length, &q_beg, &q_end, &ops_begin_col, &ops_end_col, cig_opts, do_push);
 
-
-    // Extract standard auxiliary fields; note this is still experimental;
-    int AS, NM, NH, IH;
-    extract_int_aux_values(al, &AS, &NM, &NH, &IH);
-
     if(do_push){
+      // Extract standard auxiliary fields; note this is still experimental;
+      int AS, NM, NH, IH;
+      extract_int_aux_values(al, &AS, &NM, &NH, &IH);
+      
+      int exp_err = bit_set(opt_flag, AR_Q_ERR_EXP) && al->core.l_qseq && cig_opts->qqual ?
+	estimate_read_errors((unsigned char*)cig_opts->qqual, al->core.l_qseq) : R_NaInt;
       // {0:flag, 1:r.beg, 2:r.end, 3:q.beg, 4:q.end, 5:mqual, 6:qlen, 7:qclen, 8:ops.0, 9:ops.1}
       push_column(&args->al_core, (int[AR_AL_RN]){flag, rpos_0, rpos_1, q_beg, q_end, (int)al->core.qual,
 						    (int)al->core.l_qseq, qcig_length, 1+ops_begin_col,
-						    ops_end_col, AS, NM, NH, IH});
+						    ops_end_col, AS, NM, NH, IH, exp_err});
       str_array_push_cp(&args->query_ids, bam_get_qname(al));
       // optional fields:
       if(bit_set(opt_flag, AR_Q_SEQ))
@@ -1163,8 +1188,8 @@ void *alignments_merge_thread(void *args_v){
 
   /* // we then need to adjust the values for al_i in al_ops, diff and mm */
   for(size_t i=0; i < args->t_args.al_core.col; ++i){
-    *(al_core_begin + AR_AL_RN * (i+1) - 2) += args->ops_off;
-    *(al_core_begin + AR_AL_RN * (i+1) - 1) += args->ops_off;
+    *(al_core_begin + AR_AL_RN * i + AR_AL_OPS_ROW) += args->ops_off;
+    *(al_core_begin + AR_AL_RN * i + 1 + AR_AL_OPS_ROW) += args->ops_off;
   }
   for(size_t i=0; i < args->t_args.al_ops.col; ++i)
     *(al_ops_begin + CIG_OPS_RN  * i) += args->core_off;
@@ -1680,9 +1705,12 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
     int AS, NM, NH, IH;
     extract_int_aux_values(al, &AS, &NM, &NH, &IH);
 
+    int exp_err = bit_set(opt_flag, AR_Q_ERR_EXP) && al->core.l_qseq && qqual ?
+      estimate_read_errors(qqual, al->core.l_qseq) : R_NaInt;
+    
     push_column(&al_vars, (int[AR_AL_RN]){(int)al->core.flag, r_pos_0, r_pos, q_beg, q_end, (int)al->core.qual,
 					    (int)al->core.l_qseq, qcig_length, 1+(int)ops_begin_col, (int)ops_end_col,
-					    AS, NM, NH, IH});
+					    AS, NM, NH, IH, exp_err});
     // We should modify the function so that we do not malloc and free for every query
     // sequence.
     // qseq may be 0, but that should be safe to free.

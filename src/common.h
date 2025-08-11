@@ -38,6 +38,7 @@
 #define AR_MT_INFO 5 // 0x20   return information about mate including tlen (not implemented)
 #define AR_AUX_MM 6 // 0x40  parse MM info; implies if AR_Q_QUAL, and (AR_Q_SEQ if reference sequence defined).
 #define AR_Q_INTRON_DEPTH 7 // 0x80  calculate depths for N operations only; useful for RNA-seq data.
+#define AR_Q_ERR_EXP 8 // 0x100 estimate the expected number of errors in the sequence.
 
 // A default maximum intron size; this can be over-ridden by the user
 // This is relevant to the calculation of intron_depth, but should not
@@ -53,9 +54,10 @@
 static const char* ar_return_fields[AR_R_FIELDS_N] = {"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual", "mm", "intron.depth"};
 
 // The number of rows in an alignments table ($al)
-#define AR_AL_RN 14
+#define AR_AL_RN 15
+#define AR_AL_OPS_ROW 8
 static const char* ar_al_rownames[AR_AL_RN] = {"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen",
-					       "qclen", "ops.0", "ops.1", "AS", "NM", "NH", "IH"};
+					       "qclen", "ops.0", "ops.1", "AS", "NM", "NH", "IH", "exp.err"};
 
 // The number of rows in an cigar operations table
 #define CIG_OPS_RN 8

@@ -59,6 +59,8 @@ query.pos <- function(bam.ptr, query.ids){
 ## 6 mate information.
 ## 7 parse MM auxiliary data (base modifications)
 ## 8 intron depth vector
+## 9 estimate error number as the sum of error probabilities
+##   (i.e. a Poisson approximation of the Poisson Binomial distribution)
 ## flag.filter: a vector of two elements, [ required flags, banned flags ]
 ## min.mq = minimum mapping quality
 ## min.ql = minimum query length (as reported in the bam_core field; this is not the

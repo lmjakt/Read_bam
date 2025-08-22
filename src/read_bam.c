@@ -912,8 +912,11 @@ int read_next_entry( struct bam_ptrs *bam, bam1_t *b){
   return( sam_read1(bam->sam, bam->header, b) );
 }
 
-// if( opt_flag & 1 ) ==> parse cigar data.
-SEXP build_query_index(SEXP bam_ptr_r, SEXP region_r, SEXP opt_flag_r){
+// if( opt_flag & 1 ) ==> parse cigar data to give the ends of alignments
+// min_mq_r: minimum mapping quality; only unique maximal mapping alignments
+//           get non-0 scores. Setting this value to > 0 will remove such alignments.
+//           This will make downstream analyses quicker, but removes some information.
+SEXP build_query_index(SEXP bam_ptr_r, SEXP region_r, SEXP opt_flag_r, SEXP min_mq_r){
   struct bam_ptrs *bam = extract_bam_ptr(bam_ptr_r);
   if(!bam){
     // we could be clever here and try to recreate from the protect information
@@ -926,6 +929,10 @@ SEXP build_query_index(SEXP bam_ptr_r, SEXP region_r, SEXP opt_flag_r){
     error("opt_flag_r should be an integer vector containing one integer");
   int opt_flag = INTEGER(opt_flag_r)[0];
 
+  if(TYPEOF(min_mq_r) != INTSXP || length(min_mq_r) != 1)
+    error("min_mq_r should be an integer vector containing one integer");
+  int min_mapq = INTEGER(min_mq_r)[0];
+  
   if(!bam->index){
     error("External pointer does not contain an index structure");
   }
@@ -974,11 +981,15 @@ SEXP build_query_index(SEXP bam_ptr_r, SEXP region_r, SEXP opt_flag_r){
     // can be assigned locations;
     if(flag & 0x4)
       continue;
+    int mapq = (int)al->core.qual;
+    if(mapq < min_mapq)
+      continue;
     int rpos_0 = 1 + (int)al->core.pos;
     int rpos_1 = rpos_0;
     int qpos_0 = 1;
     int qpos_1 = 1;
     int q_length = al->core.l_qseq;
+    int qc_length = (opt_flag & 1) == 1 ? q_length : 0; 
     if((opt_flag & 1) && (al->core.n_cigar > 0)){
       uint32_t *cigar = bam_get_cigar(al);
       // 5 XOR [4, 5] --> 0, 1; this tests for BAM_CSOFT_CLIP and BAM_CHARD_CLIP
@@ -987,13 +998,28 @@ SEXP build_query_index(SEXP bam_ptr_r, SEXP region_r, SEXP opt_flag_r){
       // of a second cigar op; hence we should not need to check the cigar length here.
       qpos_0 += (bam_cigar_op(cigar[0]) == BAM_CHARD_CLIP && bam_cigar_op(cigar[1]) == BAM_CSOFT_CLIP) ?
 	bam_cigar_oplen(cigar[1]) : 0;
+      qpos_1 = qpos_0;
+      int op, op_length, op_type;
+      // for this purpose the query should be incremented if the op is
+      // M (0), I (1), =(7), X(8)
+      // This can be tested by right shifting an integer that has those bits set
+      // by the op value: i.e.
+      // (0x0183 >> op) == 1 should check for query consumption in all cases. Thats a bit
+      // more elegant than checking op_type and op for BAM_CHARD_CLIP.
+      unsigned int query_bits = 0x0183;
       for(int i=0; i < al->core.n_cigar; ++i){
-	rpos_1 += bam_cigar_type(cigar[i]) & CIG_OP_TP_RC ? bam_cigar_oplen( cigar[i] ) : 0;
-	qpos_1 += bam_cigar_type(cigar[i]) & CIG_OP_TP_QC ? bam_cigar_oplen( cigar[i] ) : 0;
+	op = bam_cigar_op(cigar[i]);
+	op_length = bam_cigar_oplen(cigar[i]);
+	op_type = bam_cigar_type(cigar[i]);
+	rpos_1 += (op_type & CIG_OP_TP_RC) ? op_length : 0;
+	qpos_1 += ((query_bits >> op) & 1) == 1 ? op_length : 0;
+	//qpos_1 += (op_type == CIG_OP_TP_QC || op == BAM_CHARD_CLIP) ? op_length : 0;
+	qc_length += (op == BAM_CHARD_CLIP) ? op_length : 0;
       }
     }
     srh_add_element(bam->qname_hash, bam_get_qname(al),
-		    init_sam_record(target_id, rpos_0, rpos_1, flag, qpos_0, qpos_1, q_length));
+		    init_sam_record(target_id, rpos_0, rpos_1, flag,
+				    qpos_0, qpos_1, q_length, mapq, qc_length));
     ++count;
   }
   SEXP ret_value = PROTECT(allocVector(INTSXP, 1));
@@ -1093,8 +1119,6 @@ void *alignments_region_thread(void *v_args){
   int ret;
   bam1_t *al = bam_init1(); // needs to be destroyed at the end of parsing;
   int start = args->start;
-  //  int end = args->end;
-  //  int include_left = cig_opts->include_left_als;
   uint32_t *flag_filter = (uint32_t*)args->flag_filter;
   size_t seq_buffer_size=1024;
   // If we need to pass the query sequence to cigar_to_table; set up a buffer:
@@ -1880,15 +1904,8 @@ SEXP sam_read_n(SEXP bam_ptr_r, SEXP n_r, SEXP ret_f_r,
   int min_q = sel_flags[2];
   if(n <= 0)
     error("you must request at least one entry");
-  // To start with to make sure that the function works, simply return the identifiers.
-  // afterwards we can consider more complex options. But for this we mostly will want
-  // the id, flag, cigar, seq and quality.. But we can check that later.
-  //  SEXP ret_data = PROTECT( allocVector(VECSXP, 5) );
-  // n, the number of reads obtained, and then the 12 fields of the sam forma;
+  // The dimensions and rownames are defined in common.h
   SEXP ret_data_names = PROTECT(mk_strsxp( srn_return_fields, SRN_FIELDS_N ));
-  /* SEXP ret_data_names = PROTECT( mk_strsxp( (const char*[]){"id", "flag", "ref", "pos", "mapq", */
-  /* 							      "cigar", "ref.m", "pos.m", "tlen", */
-  /* 							      "seq", "qual", "aux", "ops", "q.inf", "mm", "n"}, 16)); */
   SEXP ret_data = PROTECT( allocVector(VECSXP, length(ret_data_names)) );
   setAttrib( ret_data, R_NamesSymbol, ret_data_names );
   // The last element is a single integer counting the number of entries returned:
@@ -2901,7 +2918,7 @@ static const R_CallMethodDef callMethods[] = {
   {"load_bam", (DL_FUNC)&load_bam, 2},
   {"set_iterator", (DL_FUNC)&set_iterator, 3},
   {"clear_iterator", (DL_FUNC)&clear_iterator, 1},
-  {"build_query_index", (DL_FUNC)&build_query_index, 3},
+  {"build_query_index", (DL_FUNC)&build_query_index, 4},
   {"query_positions", (DL_FUNC)&query_positions, 2},
   {"alignments_region", (DL_FUNC)&alignments_region, 9},
   {"alignments_region_mt", (DL_FUNC)&alignments_region_mt, 11},

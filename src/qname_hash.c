@@ -3,7 +3,7 @@
 #include "qname_hash.h"
 
 sam_record init_sam_record(int target_id, int begin, int end, int flag,
-			   int q_begin, int q_end, int q_length){
+			   int q_begin, int q_end, int q_length, int map_q, int qc_length){
   sam_record sr;
   sr.target_id=target_id;
   sr.begin=begin;
@@ -12,6 +12,8 @@ sam_record init_sam_record(int target_id, int begin, int end, int flag,
   sr.q_begin=q_begin;
   sr.q_end=q_end;
   sr.q_length=q_length;
+  sr.map_q=map_q;
+  sr.qc_length = qc_length;
   return(sr);
 };
 

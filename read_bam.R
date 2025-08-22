@@ -39,8 +39,9 @@ clear.bam.iterator <- function(bam.ptr){
 ## order to find the reference end and the query start and end
 ## positions. It turns out that it doesn't make much difference
 ## to the speed of the index building. So it's on by default.
-build.index <- function(bam.ptr, region, opt.flag=1L){
-    .Call("build_query_index", bam.ptr, region, as.integer(opt.flag))
+build.index <- function(bam.ptr, region, opt.flag=1L, min.mapq=0){
+    .Call("build_query_index", bam.ptr, region, as.integer(opt.flag),
+          as.integer(min.mapq))
 }
 
 query.pos <- function(bam.ptr, query.ids){

@@ -31,6 +31,10 @@
    If it is, then quite possibly it doesn't really matter.
 3. It is possible to set an iterator for an unsorted bam file to the beginning of the file using
    a specific value defined in SAM.h. This should be added to allow resetting the iterator.
+4. `build_query_index` currently adds reads for named regions; this has some advantages, but it
+   seems reasonable to be able to build an index for the full assembly in one go. Maybe a marginal
+   advantage though. We do need a way to rebuild the index with different options though (maybe
+   just make a new bam object is more reasonable?)
 
 ## Code improvement
 

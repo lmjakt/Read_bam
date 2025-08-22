@@ -7,9 +7,9 @@
 // Functions for creating a khash<string, kvec>
 // Where kvec holds an array of structs giving the locations of matches
 
-#define SAM_RECORD_FIELDS_N 7
+#define SAM_RECORD_FIELDS_N 9
 static const char* sam_record_field_names[SAM_RECORD_FIELDS_N] =
-  {"target.id", "r0", "r1", "flag", "q0", "q1", "q.length"};
+  {"target.id", "r0", "r1", "flag", "q0", "q1", "q.length", "map.q", "qc.length"};
 
 /*! @typedef 
   @abstract Structure for holding information about a single alignemnt.
@@ -27,10 +27,12 @@ typedef struct sam_record {
   int q_begin;
   int q_end;
   int q_length;
+  int map_q;
+  int qc_length;
 } sam_record;
 
 sam_record init_sam_record(int target_id, int begin, int end, int flag,
-			   int q_begin, int q_end, int q_length);
+			   int q_begin, int q_end, int q_length, int map_q, int qc_length);
 
 typedef struct { kvec_t(sam_record); } sam_record_list;
 

@@ -358,7 +358,7 @@ void extract_int_aux_values(bam1_t *b, int *AS, int *NM, int *NH, int *IH){
 // errors; that's 8 million errors.)
 //
 // The length argument uses int32_t becaus this is the type held by a
-// bam1_t objectl
+// bam1_t object
 int32_t estimate_read_errors(const unsigned char* qual, int32_t ql){
   const double mult = 256;
   double err_n = 0;
@@ -1074,7 +1074,7 @@ SEXP query_positions(SEXP bam_ptr_r, SEXP query_ids_r){
 
 // Parse a region in parallel using pthreads.
 // Use 0-based counting for positions.
-// The pointers to all data structures excepth for depth in args should be
+// The pointers to all data structures 
 // initialised here. They should be 0 at this point.
 void *alignments_region_thread(void *v_args){
   alignments_region_mt_args *args = (alignments_region_mt_args*)v_args;
@@ -1109,8 +1109,11 @@ void *alignments_region_thread(void *v_args){
   cig_opts->depth_l = args->end - args->start;
   cig_opts->depth_begin = args->start;
 
-  // This is a bit wasteful; but it simplifies things somewhat.
+  // This is a bit wasteful because it creates the data structures even
+  // if they are not needed. This is done because it simplifies what
+  // needs to be done for check.
   args->mm_info = init_i_matrix(MM_INFO_RN, args->imatrix_initial_size);
+  args->mate_core = init_i_matrix(AR_AL_MATE_RN, args->imatrix_initial_size);
   args->diff = init_i_matrix(Q_DIFF_RN, args->imatrix_initial_size);
   cig_opts->mm_info = bit_set(opt_flag, AR_AUX_MM) ? &args->mm_info : 0;
   cig_opts->diff = bit_set(opt_flag, AR_Q_DIFF) ? &args->diff : 0;
@@ -1155,7 +1158,12 @@ void *alignments_region_thread(void *v_args){
 		   &qcig_length, &q_beg, &q_end, &ops_begin_col, &ops_end_col, cig_opts, do_push);
 
     if(do_push){
-      // Extract standard auxiliary fields; note this is still experimental;
+      // Extract standard auxiliary fields;
+      // it may be better to have a set of fields set by the user
+      // that hasn't been done yet because it would require setting data structures
+      // dynamically. (Not terribly difficult but).
+      // Adding an option here to extract mq values if mate information has been requested
+      // would be easy.
       int AS, NM, NH, IH;
       extract_int_aux_values(al, &AS, &NM, &NH, &IH);
       
@@ -1167,6 +1175,8 @@ void *alignments_region_thread(void *v_args){
 						    ops_end_col, AS, NM, NH, IH, exp_err});
       str_array_push_cp(&args->query_ids, bam_get_qname(al));
       // optional fields:
+      if(bit_set(opt_flag, AR_MT_INFO)) // add one to make R happy.
+	push_column(&args->mate_core, (int[AR_AL_MATE_RN]){(int)al->core.mtid + 1, (int)al->core.mpos + 1, (int)al->core.isize} );
       if(bit_set(opt_flag, AR_Q_SEQ))
 	str_array_push_cp(&args->query_seq, cig_opts->qseq);
 
@@ -1195,6 +1205,7 @@ void *alignments_merge_thread(void *args_v){
   int *al_ops_begin = args->al_ops + (CIG_OPS_RN * args->ops_off);
   int *diff_begin = args->diff ? args->diff + (Q_DIFF_RN * args->diff_off) : 0;
   int *mm_begin = args->mm ? args->mm + (MM_INFO_RN * args->mm_off) : 0;
+  int *mate_begin = args->mate_core ? args->mate_core + (AR_AL_MATE_RN * args->mate_off) : 0;
   memcpy(al_core_begin,
 	 args->t_args.al_core.data,
 	 (AR_AL_RN * args->t_args.al_core.col * int_size));
@@ -1209,7 +1220,10 @@ void *alignments_merge_thread(void *args_v){
     memcpy(mm_begin,
 	   args->t_args.mm_info.data,
 	   (MM_INFO_RN * args->t_args.mm_info.col * int_size));
-
+  if(args->mate_core)
+    memcpy(mate_begin, args->t_args.mate_core.data,
+	   (AR_AL_MATE_RN * args->t_args.mate_core.col * int_size));
+  
   /* // we then need to adjust the values for al_i in al_ops, diff and mm */
   for(size_t i=0; i < args->t_args.al_core.col; ++i){
     *(al_core_begin + AR_AL_RN * i + AR_AL_OPS_ROW) += args->ops_off;
@@ -1382,17 +1396,22 @@ SEXP alignments_region_mt(SEXP bam_file_r, SEXP index_file_r,
     pthread_create( &threads[i], NULL, alignments_region_thread, (void*)&t_args[i]);
   }
   void *status;
-  int n_core=0, n_ops=0, n_diff=0, n_mm=0;
+  int n_core=0, n_mate=0, n_ops=0, n_diff=0, n_mm=0;
   for(int i=0; i < n_threads; ++i){
     pthread_join(threads[i], &status);
   // Then merge the data and clean up stuff..
     n_core += t_args[i].al_core.col;
+    n_mate += t_args[i].mate_core.col;
     n_ops += t_args[i].al_ops.col;
     n_diff += t_args[i].diff.col;
     n_mm += t_args[i].mm_info.col;
   }
   // depth (6) and intron depth have already been set (10)
   // There should be a better way of doing this, but..
+  // The idea is to use the bit defined as the ret_data index
+  // so instead of (ret_data, 0, region_r), we would use AR_<option name>
+  // but this would require either reordering or other extensive changes
+  // which have the potential to cause other problems. 
   SET_VECTOR_ELT(ret_data, 0, region_r);
   SET_VECTOR_ELT(ret_data, 1, allocVector(STRSXP, n_core));
   SET_VECTOR_ELT(ret_data, 2, allocMatrix(INTSXP, AR_AL_RN, n_core));
@@ -1413,10 +1432,15 @@ SEXP alignments_region_mt(SEXP bam_file_r, SEXP index_file_r,
     SET_VECTOR_ELT(ret_data, 9, allocMatrix(INTSXP, MM_INFO_RN, n_mm));
     setAttrib(VECTOR_ELT(ret_data, 9), R_DimNamesSymbol, mk_rownames(mm_info_rownames, MM_INFO_RN));
   }
-
+  if(bit_set(opt_flag, AR_MT_INFO)){
+    SET_VECTOR_ELT(ret_data, 11, allocMatrix(INTSXP, AR_AL_MATE_RN, n_mate));
+    setAttrib(VECTOR_ELT(ret_data, 11), R_DimNamesSymbol, mk_rownames(al_mate_rownames, AR_AL_MATE_RN));
+  }
+  
   // The following (with lots of copying of strings), may be wortwhile to
   // also thread. It should be fairly straightforward.
   int *core_al = INTEGER(VECTOR_ELT(ret_data, 2));
+  int *mate_core = bit_set(opt_flag, AR_MT_INFO) ? INTEGER(VECTOR_ELT(ret_data, 11)) : 0;
   int *cig_ops = INTEGER(VECTOR_ELT(ret_data, 3));
   int *diff = bit_set(opt_flag, AR_Q_DIFF) ? INTEGER(VECTOR_ELT(ret_data, 5)) : 0;
   int *aux_mm = bit_set(opt_flag, AR_AUX_MM) ? INTEGER(VECTOR_ELT(ret_data, 9)) : 0;
@@ -1428,24 +1452,30 @@ SEXP alignments_region_mt(SEXP bam_file_r, SEXP index_file_r,
   
   // First check the single threaded way:
   //  int core_i=0, ops_i=0, diff_i=0, mm_i=0;
-  size_t core_off = 0, ops_off=0, diff_off=0, mm_off=0;
+  size_t core_off = 0, mate_off=0, ops_off=0, diff_off=0, mm_off=0;
   alignments_merge_args *merge_args = malloc(sizeof(alignments_merge_args) * n_threads);
   alignments_merge_args merge_args_p = init_ar_merge_args();
   merge_args_p.al_core = core_al;
+  merge_args_p.mate_core = mate_core;
   merge_args_p.al_ops = cig_ops;
-  merge_args_p.diff = bit_set(opt_flag, AR_Q_DIFF) ? diff : 0;
-  merge_args_p.mm = bit_set(opt_flag, AR_AUX_MM) ? aux_mm : 0;
+  merge_args_p.diff = diff;
+  merge_args_p.mm = aux_mm;
+  // the checks in the two following statements are redundant as the
+  // value of diff and aux_mm should be 0 if the bit is not set.
+  /* merge_args_p.diff = bit_set(opt_flag, AR_Q_DIFF) ? diff : 0; */
+  /* merge_args_p.mm = bit_set(opt_flag, AR_AUX_MM) ? aux_mm : 0; */
   pthread_t *m_threads = malloc(sizeof(pthread_t) * n_threads);
   // set up the imatrix merge threads:
   for(int i=0; i < n_threads; ++i){
     merge_args[i] = merge_args_p;
     merge_args[i].t_args = t_args[i];
-    arm_set_offsets(&merge_args[i], core_off, ops_off, diff_off, mm_off);
+    arm_set_offsets(&merge_args[i], core_off, ops_off, diff_off, mm_off, mate_off);
     pthread_create( &m_threads[i], NULL, alignments_merge_thread, (void*)&merge_args[i] );
     core_off += t_args[i].al_core.col;
     ops_off +=  t_args[i].al_ops.col;
     diff_off += t_args[i].diff.col;
     mm_off += t_args[i].mm_info.col;
+    mate_off += t_args[i].mate_core.col;
   }
   
   core_off = ops_off = diff_off = mm_off = 0;
@@ -1465,28 +1495,29 @@ SEXP alignments_region_mt(SEXP bam_file_r, SEXP index_file_r,
     diff_off += t_args[i].diff.col;
     mm_off += t_args[i].mm_info.col;
 
-    // and free data:
-    str_array_free( &t_args[i].query_ids );
-    if(bit_set(opt_flag, AR_Q_SEQ))
-      str_array_free( &t_args[i].query_seq );
-    if(bit_set(opt_flag, AR_CIG))
-      str_array_free( &t_args[i].cigars );
-    if(bit_set(opt_flag, AR_Q_QUAL))
-      str_array_free( &t_args[i].query_qual );
+    // and free data: // this now done by free_ar_args further down
+    /* str_array_free( &t_args[i].query_ids ); */
+    /* if(bit_set(opt_flag, AR_Q_SEQ)) */
+    /*   str_array_free( &t_args[i].query_seq ); */
+    /* if(bit_set(opt_flag, AR_CIG)) */
+    /*   str_array_free( &t_args[i].cigars ); */
+    /* if(bit_set(opt_flag, AR_Q_QUAL)) */
+    /*   str_array_free( &t_args[i].query_qual ); */
   }
   // Join the other threads
   for(int i=0; i < n_threads; ++i){
     pthread_join(m_threads[i], &status);
+    free_ar_args( &t_args[i] );
   }
-  for(int i=0; i < n_threads; ++i){
-    // free data from t_args[i]
-    free( t_args[i].al_core.data );
-    free( t_args[i].al_ops.data );
-    if(bit_set(opt_flag, AR_AUX_MM))
-      free( t_args[i].mm_info.data );
-    if(bit_set(opt_flag, AR_Q_DIFF))
-      free( t_args[i].diff.data );
-  }
+  /* for(int i=0; i < n_threads; ++i){ */
+  /*   // free data from t_args[i] */
+  /*   free( t_args[i].al_core.data ); */
+  /*   free( t_args[i].al_ops.data ); */
+  /*   if(bit_set(opt_flag, AR_AUX_MM)) */
+  /*     free( t_args[i].mm_info.data ); */
+  /*   if(bit_set(opt_flag, AR_Q_DIFF)) */
+  /*     free( t_args[i].diff.data ); */
+  /* } */
   free(t_args);
   free(merge_args);
   free(threads);

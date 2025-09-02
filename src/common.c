@@ -54,6 +54,15 @@ struct i_matrix init_i_matrix(size_t nrow, size_t ncol){
   return(m);
 }
 
+void clear_i_matrix(struct i_matrix *m){
+  m->nrow=0;
+  m->ncol=0;
+  m->row=0;
+  m->col=0;
+  free(m->data);
+  m->data = 0;
+}
+
 void double_columns( struct i_matrix *m ){
   if(m->ncol == 0){
     m->ncol = 2;
@@ -209,7 +218,6 @@ alignments_region_mt_args init_ar_args(){
   memset(&args, 0, sizeof(alignments_region_mt_args));
   args.cig_opt = init_cigar_parse_options();
   args.imatrix_initial_size = OPS_INIT_SIZE;
-  //  args.extra_depth_isize = OPS_INIT_SIZE;
   return(args);
 }
 
@@ -219,12 +227,25 @@ alignments_merge_args init_ar_merge_args(){
   return(args);
 }
 
+void free_ar_args(alignments_region_mt_args *args){
+  str_array_free( &args->query_ids );
+  str_array_free( &args->query_seq );
+  str_array_free( &args->query_qual );
+  str_array_free( &args->cigars );
+  clear_i_matrix( &args->al_core );
+  clear_i_matrix( &args->mate_core );
+  clear_i_matrix( &args->al_ops );
+  clear_i_matrix( &args->diff );
+  clear_i_matrix( &args->mm_info );
+}
+
 void arm_set_offsets(alignments_merge_args *args,
-		     size_t core_off, size_t ops_off, size_t diff_off, size_t mm_off){
+		     size_t core_off, size_t ops_off, size_t diff_off, size_t mm_off, size_t mate_off){
   args->core_off = core_off;
   args->ops_off = ops_off;
   args->diff_off = diff_off;
   args->mm_off = mm_off;
+  args->mate_off = mate_off;
 }
 
 // This allocates new words; that may or may not be what you want

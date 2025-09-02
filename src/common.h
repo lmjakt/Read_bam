@@ -50,14 +50,22 @@
 
 // The number of fields in the list returned by alignments_region()
 // and their names.
-#define AR_R_FIELDS_N 11
-static const char* ar_return_fields[AR_R_FIELDS_N] = {"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual", "mm", "intron.depth"};
+#define AR_R_FIELDS_N 12
+static const char* ar_return_fields[AR_R_FIELDS_N] = {"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual", "mm", "intron.depth", "mate"};
 
 // The number of rows in an alignments table ($al)
 #define AR_AL_RN 15
-#define AR_AL_OPS_ROW 8
 static const char* ar_al_rownames[AR_AL_RN] = {"flag", "r.beg", "r.end", "q.beg", "q.end", "mqual", "qlen",
 					       "qclen", "ops.0", "ops.1", "AS", "NM", "NH", "IH", "exp.err"};
+// AR_AL_OPS_ROW specifies the location of ops.0; this is necessary because
+// the ops rows need to be set by the cigar parsing function (cigar_to_table)
+#define AR_AL_OPS_ROW 8
+
+// the mate quality is specified as an auxiliary tag. We could consider to
+// parse the auxiliary information by default but that would be wasteful if
+// it is known that it hasn't been set.
+#define AR_AL_MATE_RN 3
+static const char* al_mate_rownames[AR_AL_MATE_RN] = {"tid", "pos", "isize"};
 
 // The number of rows in an cigar operations table
 #define CIG_OPS_RN 8
@@ -156,6 +164,7 @@ struct i_matrix {
 };
 
 struct i_matrix init_i_matrix(size_t nrow, size_t ncol);
+void clear_i_matrix(struct i_matrix *m);
 
 void double_columns( struct i_matrix *m );
 
@@ -273,26 +282,29 @@ typedef struct alignments_region_mt_args {
   struct str_array query_qual;
   struct str_array cigars;
   struct i_matrix al_core; // flag, r.beg, r.edn, q.beg, q.end, mqual, qlen, qclen, ops.0, ops.1
+  struct i_matrix mate_core; // tid, pos, isize
   struct i_matrix al_ops;
   // pointers to these will be placed in cig_opt
   struct i_matrix diff, mm_info;
 } alignments_region_mt_args;
 
 alignments_region_mt_args init_ar_args();
+void free_ar_args(alignments_region_mt_args *args);
 
 typedef struct alignments_merge_args {
   int *al_core;
+  int *mate_core;
   int *al_ops;
   int *diff;
   int *mm;
 
   struct alignments_region_mt_args t_args;
-  size_t core_off, ops_off, diff_off, mm_off;
+  size_t core_off, ops_off, diff_off, mm_off, mate_off;
 } alignments_merge_args;
 
 alignments_merge_args init_ar_merge_args();
 void arm_set_offsets(alignments_merge_args *args,
-		     size_t core_off, size_t ops_off, size_t diff_off, size_t mm_off);
+		     size_t core_off, size_t ops_off, size_t diff_off, size_t mm_off, size_t mate_off);
 
 // split_string
 // str: the string to be split (0 terminated)

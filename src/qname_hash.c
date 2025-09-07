@@ -1,6 +1,7 @@
 #include "kvec.h"
 #include "khash.h"
 #include "qname_hash.h"
+#include <stdio.h>
 
 sam_record init_sam_record(int target_id, int begin, int end, int flag,
 			   int q_begin, int q_end, int q_length, int map_q, int qc_length){
@@ -62,3 +63,93 @@ sam_record_list* srh_get(khash_t(sam_id_h) *hash, kh_cstr_t query_id){
 }
 
 
+sam_record_pair_p init_sam_record_pair_p(){
+  sam_record_pair_p srp;
+  srp.read1 = 0;
+  srp.read2 = 0;
+  return(srp);
+}
+
+sam_record_pair_p srh_get_uniq_pair(khash_t(sam_id_h)* hash, kh_cstr_t query_id,
+				    uint32_t *target_equiv, size_t target_n, int *error){
+  sam_record_list* srl= srh_get(hash, query_id);
+  sam_record_pair_p srp = init_sam_record_pair_p();
+  // Since only unique pairs are allowed, and since each read can only map
+  // to two different locations, the maximum allowed number of alignments
+  // is 4. Any more than that and we should simply return an empty set;
+  // Similarly we should have at least two alignments;
+  if(srl->n > 4 || srl->n < 2){
+    *error = 1;
+    return(srp);
+  }
+
+  // the sam record list indices for read1 and read2
+  size_t read1_i[2] = {0,0};
+  size_t read2_i[2] = {0,0};
+  // and the taget ids to which the reads have been aligned
+  size_t read1_target[2] = {0, 0};
+  size_t read2_target[2] = {0, 0};
+
+  // The number of alignments for read 1 and 2. Both should
+  // be 1 or 2;
+  int read1_n = 0;
+  int read2_n = 0;
+
+  // bitwise masks holding which of the two possible reads
+  // are allowed; only one for each should be;
+  unsigned int r1_b, r2_b;
+  r1_b = r2_b = 0;
+
+  // then go through the entries and see if we can define both read1 and read2
+  // appropriately:
+  for(size_t i=0; i < srl->n; ++i){
+    if(srl->a[i].target_id >= target_n){ /// this should really warn the user
+      *error = 2;
+      return(srp);
+    }
+    int is_read1 = srl->a[i].flag & 64;
+    if( (is_read1 && read1_n > 1) || (!is_read1 && read2_n > 1)){
+      *error = 3;
+      return(srp);
+    }
+    if(is_read1){
+      read1_i[ read1_n ] = i;
+      read1_target[ read1_n ] = srl->a[i].target_id;
+      r1_b |= ((target_equiv[read1_target[read1_n]] & 1) ? 1 << read1_n : 0);
+      read1_n++;
+    }
+    if(!is_read1){
+      read2_i[ read2_n ] = i;
+      read2_target[ read2_n ] = srl->a[i].target_id;
+      r2_b |= ((target_equiv[read2_target[read2_n]] & 1) ? 1 << read2_n : 0);
+      read2_n++;
+    }
+  }
+  // Check that we have exactly one appropriate target for each
+  // read:
+  // the number of set bits should be 1 for both; i.e. values of 1 or 2
+  if( __builtin_popcount(r1_b) != 1 || __builtin_popcount(r2_b) != 1 ){
+    *error = 4;
+    return(srp);
+  }
+
+  // if we are here then it is established that there is exactly
+  // one acceptable alignment for read1 and read2; We only need
+  // to confirm that the alignments are to equivalent targets if
+  // there is more than one:
+  // THE equivalents vector must be using a 1 based offset; 0 should indicate
+  // no homologous sequence; to compensate add one to the target obtained.
+  if(read1_n > 1 && (target_equiv[ read1_target[0] ] >> 1) != (1+read1_target[1])){
+    *error = 5;
+    return(srp);
+  }
+  if(read2_n > 1 && (target_equiv[ read2_target[0] ] >> 1) != (1+read2_target[1])){
+    *error = 6;
+    return(srp);
+  }
+
+  *error = 0;
+  srp.read1 = &(srl->a[ read1_i[ (r1_b == 1) ? 0 : 1 ] ]);
+  srp.read2 = &(srl->a[ read2_i[ (r2_b == 1) ? 0 : 1 ] ]);
+  return(srp);
+}

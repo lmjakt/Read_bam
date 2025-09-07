@@ -674,7 +674,7 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
 	   && r < opts->rseq_l && (opts->qseq[q] != opts->rseq[r])){
 	  uint32_t qq = opts->qqual ? (opts->qqual[q] << 16) : 0;
 	  int nuc_info = (int)( ((uint32_t)opts->rseq[r] << 8)) | ((uint32_t)opts->qseq[q]) | qq;
-	  push_column( opts->diff, (int[]){ al_i, r+1, q+1, nuc_info });
+	  push_column( opts->diff, (int[]){ al_i, r+1, q+1+h_clip, nuc_info });
 	}
       }
     }
@@ -1069,6 +1069,71 @@ SEXP query_positions(SEXP bam_ptr_r, SEXP query_ids_r){
   kv_destroy(query_ids);
   UNPROTECT(1);
   return(ret);
+}
+
+// bam_ptr_r: a bam external pointer
+// query_ids_r: a set of query ids (STRSXP)
+// target_equiv_r: A vector where the ith position holds:
+//               (equivalent_target id << 1) | (include in output)
+//           where equivalent_target_id is the index of the target
+//           that would be considered a homologous chromosome (allelic?)
+//           Alignments to only one of a pair of allelic chromosomes may
+//           be returned. This is indicated by the least significant bit.
+SEXP unique_query_pairs(SEXP bam_ptr_r, SEXP query_ids_r, SEXP target_equiv_r){
+  struct bam_ptrs *bam = extract_bam_ptr(bam_ptr_r);
+  if(!bam){
+    // we could be clever here and try to recreate from the protect information
+    // but we should think carefully about this
+    error("External pointer is NULL");
+  }
+  if(!bam->qname_hash)
+    error("Query positions have not been indexed");
+
+  if(TYPEOF(query_ids_r) != STRSXP || length(query_ids_r) < 1)
+    error("query_ids_r should be a character vector of positive length");
+
+  // the length of target_equiv_r should be the same as 
+  if(TYPEOF(target_equiv_r) != INTSXP || length(target_equiv_r) != bam->header->n_targets)
+    error("target_equiv_r should be an integer vector of the same lengths as the number of targets");
+
+  uint32_t *target_equiv = (uint32_t*)INTEGER(target_equiv_r);
+  size_t target_n = length(target_equiv_r);
+  
+  // The function will return a list of:
+  // 1; an integer vector of the same length as query_ids_r,
+  //    giving the error codes indicating if a read pair
+  //    of appropriate values was found.
+  // 2. an integer vector containing the indices of which pairs were returned
+  // 3. A matrix of sam_records pairs;
+  SEXP ret_values = PROTECT(allocVector(VECSXP, 3));
+  SET_VECTOR_ELT(ret_values, 0, allocVector(INTSXP, length(query_ids_r)));
+  int *errors = INTEGER(VECTOR_ELT(ret_values, 0));
+
+  // this will hold the pairs in the order read1, read2, read1, ...
+  sam_record_list query_pos;
+  kv_init(query_pos);
+  kvec_t(int) query_i;
+  kv_init(query_i);
+  for(int i=0; i < length(query_ids_r); ++i){
+    sam_record_pair_p pairs = srh_get_uniq_pair(bam->qname_hash, CHAR(STRING_ELT(query_ids_r, i)),
+						target_equiv, target_n, errors + i);
+    // it should not be posible for errors[i] to be 0 and for the pair pointers to be 0
+    // but lets check anyway
+    if(!errors[i] && pairs.read1 && pairs.read2){
+      kv_push(sam_record, query_pos, *pairs.read1);
+      kv_push(sam_record, query_pos, *pairs.read2);
+      kv_push(int, query_i, i+1);
+    }
+  }
+  // then alloc appropriate memory:
+  SET_VECTOR_ELT(ret_values, 1, allocVector(INTSXP, query_i.n));
+  memcpy( INTEGER(VECTOR_ELT(ret_values, 1)), query_i.a, sizeof(int) * query_i.n );
+  SET_VECTOR_ELT(ret_values, 2, allocMatrix(INTSXP, 2 * SAM_RECORD_FIELDS_N, query_i.n));
+  memcpy( INTEGER(VECTOR_ELT(ret_values, 2)), query_pos.a, 2 * query_i.n * SAM_RECORD_FIELDS_N * sizeof(int));
+  kv_destroy(query_pos);
+  kv_destroy(query_i);
+  UNPROTECT(1);
+  return(ret_values);
 }
 
 
@@ -2951,6 +3016,7 @@ static const R_CallMethodDef callMethods[] = {
   {"clear_iterator", (DL_FUNC)&clear_iterator, 1},
   {"build_query_index", (DL_FUNC)&build_query_index, 4},
   {"query_positions", (DL_FUNC)&query_positions, 2},
+  {"unique_query_pairs", (DL_FUNC)&unique_query_pairs, 3},
   {"alignments_region", (DL_FUNC)&alignments_region, 9},
   {"alignments_region_mt", (DL_FUNC)&alignments_region_mt, 11},
   {"count_region_alignments", (DL_FUNC)&count_region_alignments, 5},

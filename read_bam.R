@@ -51,6 +51,75 @@ query.pos <- function(bam.ptr, query.ids){
     tmp
 }
 
+## bam.ptr:   An external pointer to a bam object
+## query.ids: a set of query identifiers for which pair information is
+##            desired. This should be unique; but will be checked.
+## target.equiv: A vector mapping target homology; i.e. which of the
+##               scaffolds can be considered as reciprocal alleles / haplotypes
+##               target.equiv is assumed to use 1 based counting since it's an
+##               R object; 0s in this are used to indicate the ABSENCE of a clear
+##               homologous sequece and so this SHOULD NOT be converted to 0
+##               based offsets. It must be handled at the last moment.
+## target.sel: The targets of interest; note that only one of two homologous
+##             alleles is allowed in order to be able to define proper distances
+##             
+uniq.query.pairs <- function(bam.ptr, query.ids, target.sel, target.equiv=NULL){
+    tgl <- target.lengths(bam.ptr)
+    tgn <- names(tgl)
+    if(is.null(target.equiv)){
+        tgn.base <- sub("^H[12]", "", tgn)
+        target.equiv <- 1:length(tgn)
+        names(target.equiv) <- tgn
+        ## assume that target names are of the form "H1_" and "H2_"
+        h1.i <- grep("^H1", tgn)
+        h2.i <- grep("^H2", tgn)
+        if(length(h1.i) + length(h2.i) != length(tgn))
+            stop("Invalid assumption about target names; please supply target.equiv explicitly")
+        target.equiv[h1.i] <- h2.i[ match(tgn.base[h1.i], tgn.base[h2.i]) ]
+        target.equiv[h2.i] <- h1.i[ match(tgn.base[h2.i], tgn.base[h1.i]) ]
+        target.equiv[ is.na(target.equiv) ] <- 0
+    }
+    if(length(tgl) != length(target.equiv))
+        stop("target.equiv must be the same length as the total number of targets" )
+    if(is.character(target.sel))
+        target.sel <- match(target.sel, names(target.equiv))
+    if(max(target.sel) > length(target.equiv))
+        stop("values in target.sel, must not exceed the length of target.equiv")
+    ## We do not subtract target.equiv to a 0 based system because some targets may not have
+    ## well defined homologous alleles. This is most easily handled by indicating these as 0s
+    ## obviously, the as.integer will remove the names from target.equiv
+    te.nm <- names(target.equiv)
+    target.equiv <- bitwShiftL( as.integer(target.equiv), 1 )
+    target.equiv[target.sel] <- bitwOr( target.equiv[target.sel], 1 );
+    names(target.equiv) <- te.nm
+    query.ids <- unique(query.ids)
+    tmp <- .Call("unique_query_pairs", bam.ptr, query.ids, target.equiv);
+    ## tmp should be a list of 3 elements
+    ## 1. The error codes
+    ## 2. The indices of the queries returned.
+    ## 3. A matrix where each column contains the alignment information for read1, read2
+    ##    with rows being: target_id, begin, end, flag, q_begin, q_end, q_length, mapq, qc_length
+    ##    for each mate.
+    ## rownames for the matrix: 
+    pos.rn <- c("target.id", "r0", "r1", "flag", "q0", "q1", "q.length", "map.q", "qc.length");
+    pair.rn <- c(paste0("r1.", pos.rn), paste0("r2.", pos.rn))
+    ## The following should be true of these data structures:
+    if(length(tmp[[1]]) != length(query.ids))
+        warning("The length of query.ids is not equal to tmp[[1]]; suspect bug")
+    if(length(tmp[[2]]) != ncol(tmp[[3]]))
+        warning("The length of tmp[[2]] is not equal to the number of coluns in tmp3")
+    rownames(tmp[[3]]) <- pair.rn
+    errors <- tmp[[1]]
+    names(errors) <- query.ids
+    pair.pos <- as.data.frame( t(tmp[[3]]) )
+    pair.pos$r1.target.id <- pair.pos$r1.target.id + 1
+    pair.pos$r2.target.id <- pair.pos$r2.target.id + 1
+    pair.pos$r1.chr <- tgn[ pair.pos$r1.target.id ]
+    pair.pos$r2.chr <- tgn[ pair.pos$r2.target.id ]
+    pair.pos$query <- query.ids[ tmp[[2]] ]
+    list(query.err=errors, pos=pair.pos)
+}
+
 ## opt.flag is the bitwise OR of bits:
 ## 1 return seq_data as a character vector array
 ## 2 return positions that differ from reference; requires that ref.seq is specified

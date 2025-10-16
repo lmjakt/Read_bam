@@ -327,7 +327,7 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
 // IH: query hit total counts
 // AS and NM appear common; NH and IH seem useful. This is experimental
 // and should be replaced at some point later on.. 
-void extract_int_aux_values(bam1_t *b, int *AS, int *NM, int *NH, int *IH){
+void extract_std_int_aux_values(bam1_t *b, int *AS, int *NM, int *NH, int *IH){
   // actually I should use
   // bam_aux_get() and bam_aux2i() here
   const char as[4][2] = {"AS", "NM", "NH", "IH"};
@@ -337,7 +337,7 @@ void extract_int_aux_values(bam1_t *b, int *AS, int *NM, int *NH, int *IH){
     uint8_t *s = bam_aux_get(b, as[i]);
     if(!s)
       continue;
-    // NOTE: bam_aux2i returns a int64_t; but R does not have int64
+    // NOTE: bam_aux2i returns an int64_t; but R does not have int64
     //       and it is unlikely that we will need it for the tags used
     //       here.
     // bam_aux2i returns 0 if there was an error; detecting the error
@@ -345,6 +345,18 @@ void extract_int_aux_values(bam1_t *b, int *AS, int *NM, int *NH, int *IH){
     errno = 0;
     int64_t v = bam_aux2i(s);
     *ret[i] = (errno != EINVAL) ? (int)v : R_NaInt;
+  }
+}
+
+void extract_int_aux_values(bam1_t *b, int *i_values, const char **tags, size_t tag_n){
+  for(size_t i=0; i < tag_n; ++i){
+    i_values[i] = R_NaInt;
+    uint8_t *s = bam_aux_get(b, tags[i]);
+    if(!s)
+      continue;
+    errno = 0;
+    int64_t v = bam_aux2i(s);
+    i_values[i] = (errno != EINVAL) ? (int)v : R_NaInt;
   }
 }
 
@@ -989,7 +1001,9 @@ SEXP build_query_index(SEXP bam_ptr_r, SEXP region_r, SEXP opt_flag_r, SEXP min_
     int qpos_0 = 1;
     int qpos_1 = 1;
     int q_length = al->core.l_qseq;
-    int qc_length = (opt_flag & 1) == 1 ? q_length : 0; 
+    int qc_length = (opt_flag & 1) == 1 ? q_length : 0;
+    int AS = 0;
+    extract_int_aux_values(al, &AS, (const char*[]){"AS"}, 1);
     if((opt_flag & 1) && (al->core.n_cigar > 0)){
       uint32_t *cigar = bam_get_cigar(al);
       // 5 XOR [4, 5] --> 0, 1; this tests for BAM_CSOFT_CLIP and BAM_CHARD_CLIP
@@ -1019,7 +1033,7 @@ SEXP build_query_index(SEXP bam_ptr_r, SEXP region_r, SEXP opt_flag_r, SEXP min_
     }
     srh_add_element(bam->qname_hash, bam_get_qname(al),
 		    init_sam_record(target_id, rpos_0, rpos_1, flag,
-				    qpos_0, qpos_1, q_length, mapq, qc_length));
+				    qpos_0, qpos_1, q_length, mapq, qc_length, AS));
     ++count;
   }
   SEXP ret_value = PROTECT(allocVector(INTSXP, 1));
@@ -1230,7 +1244,7 @@ void *alignments_region_thread(void *v_args){
       // Adding an option here to extract mq values if mate information has been requested
       // would be easy.
       int AS, NM, NH, IH;
-      extract_int_aux_values(al, &AS, &NM, &NH, &IH);
+      extract_std_int_aux_values(al, &AS, &NM, &NH, &IH);
       
       int exp_err = bit_set(opt_flag, AR_Q_ERR_EXP) && al->core.l_qseq && cig_opts->qqual ?
 	estimate_read_errors((unsigned char*)cig_opts->qqual, al->core.l_qseq) : R_NaInt;
@@ -1823,7 +1837,7 @@ SEXP alignments_region(SEXP region_r, SEXP region_range_r,
 
     // Extract standard auxiliary fields; note this is still experimental;
     int AS, NM, NH, IH;
-    extract_int_aux_values(al, &AS, &NM, &NH, &IH);
+    extract_std_int_aux_values(al, &AS, &NM, &NH, &IH);
 
     int exp_err = bit_set(opt_flag, AR_Q_ERR_EXP) && al->core.l_qseq && qqual ?
       estimate_read_errors(qqual, al->core.l_qseq) : R_NaInt;

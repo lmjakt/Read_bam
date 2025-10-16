@@ -4,7 +4,8 @@
 #include <stdio.h>
 
 sam_record init_sam_record(int target_id, int begin, int end, int flag,
-			   int q_begin, int q_end, int q_length, int map_q, int qc_length){
+			   int q_begin, int q_end, int q_length, int map_q, int qc_length,
+			   int AS){
   sam_record sr;
   sr.target_id=target_id;
   sr.begin=begin;
@@ -15,6 +16,7 @@ sam_record init_sam_record(int target_id, int begin, int end, int flag,
   sr.q_length=q_length;
   sr.map_q=map_q;
   sr.qc_length = qc_length;
+  sr.AS = AS;
   return(sr);
 };
 
@@ -37,7 +39,6 @@ void clear_sam_hash(khash_t(sam_id_h)* hash){
 }
 
 
-// empty stub for now to see if I'm getting the declarations correct..
 int srh_add_element(khash_t(sam_id_h) *hash, kh_cstr_t query_id, sam_record sr){
   // first we use kh_get; this gives an iterator if an entry exists
   // we then use kh_value, and append or make a new kvec_t and
@@ -102,6 +103,9 @@ sam_record_pair_p srh_get_uniq_pair(khash_t(sam_id_h)* hash, kh_cstr_t query_id,
 
   // then go through the entries and see if we can define both read1 and read2
   // appropriately:
+  /// This needs to be modified such that map quality is taken into consideration
+  /// It would be better to use something that allows for two top scoring alignments
+  /// but at the moment that is likely to be difficult.
   for(size_t i=0; i < srl->n; ++i){
     if(srl->a[i].target_id >= target_n){ /// this should really warn the user
       *error = 2;

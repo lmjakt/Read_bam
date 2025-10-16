@@ -44,7 +44,9 @@ build.index <- function(bam.ptr, region, opt.flag=1L, min.mapq=0){
           as.integer(min.mapq))
 }
 
-query.pos <- function(bam.ptr, query.ids){
+query.pos <- function(bam.ptr, query.ids, dedup=TRUE){
+    if(dedup)
+        query.ids <- unique(query.ids)
     tmp <- .Call("query_positions", bam.ptr, query.ids)
     tmp <- data.frame(query=query.ids[tmp[[1]]], query.i=tmp[[1]], t(tmp[[2]]))
     tmp$target.id <- tmp$target.id + 1

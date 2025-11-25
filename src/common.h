@@ -139,7 +139,6 @@ struct cigar_string {
 
 // Data structures to be used in conjunction with kvec and similar
 
-
 struct cigar_string cigar_string_init(size_t b_size);
 
 void cigar_string_free( struct cigar_string *cs );
@@ -148,7 +147,37 @@ void cigar_string_grow( struct cigar_string *cs );
 
 void cigar_string_read( struct cigar_string *cs, bam1_t *b );
 
+// Structs used by qname_hash and hiC
+#define SAM_RECORD_FIELDS_N 10
+static const char* sam_record_field_names[SAM_RECORD_FIELDS_N] =
+  {"target.id", "r0", "r1", "flag", "q0", "q1", "q.length", "map.q", "qc.length", "AS"};
 
+/*! @typedef 
+  @abstract Structure for holding information about a single alignemnt.
+  @field target_id    Reference target id
+  @field begin        Reference start position
+  @field end          Reference end position (optional can be 0)
+  @field flag         Sam alignment flag
+ */
+
+typedef struct sam_record {
+  int target_id;
+  int begin;
+  int end;
+  int flag;
+  int q_begin;
+  int q_end;
+  int q_length;
+  int map_q;
+  int qc_length;
+  int AS; // alignment score; may be NA
+} sam_record;
+
+sam_record init_sam_record(int target_id, int begin, int end, int flag,
+			   int q_begin, int q_end, int q_length, int map_q, int qc_length,
+			   int AS);
+
+void sam_record_set(sam_record *sr, bam1_t *b);
 
 // These are structures for dynamically growing a return data set;
 // They would be better off in a library somewhere as I keep repeating
@@ -311,6 +340,9 @@ void arm_set_offsets(alignments_merge_args *args,
 // delim: the char to split by
 // n: a pointer to an integer whose value will be set to the number of strings
 char **split_string(const char *str, char delim, unsigned int *n);
+
+// Moved from read_bam.c as needed by hiC.c
+void extract_int_aux_values(bam1_t *b, int *i_values, const char **tags, size_t tag_n);
 
 // stolen from simple_range/arrange_lines.c
 // x1 and x1 are positions of lines that should be drawn

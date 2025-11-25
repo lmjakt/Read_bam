@@ -4,10 +4,11 @@
 #include <htslib/sam.h>
 #include <htslib/vcf.h>
 #include <pthread.h>
+#include "hiC.h"
 #include "common.h"
 #include "qname_hash.h"
 
-// Acces to bam / sam and bcf / vcf files.
+// Access to bam / sam and bcf / vcf files.
 
 // We want to hold connection data as an external pointer
 // to the relevant R data structures:
@@ -317,9 +318,6 @@ int query_to_ref(int32_t q_pos, int *r_pos, struct i_matrix *ops,
   return(-1);
 }
 
-// 
-// This should be replaced with a function allowing the extraction
-// of arbitrary auxiliary data; but I do not have sufficient time
 // right now.
 // AS: alignment score
 // NM: edit distance
@@ -348,17 +346,8 @@ void extract_std_int_aux_values(bam1_t *b, int *AS, int *NM, int *NH, int *IH){
   }
 }
 
-void extract_int_aux_values(bam1_t *b, int *i_values, const char **tags, size_t tag_n){
-  for(size_t i=0; i < tag_n; ++i){
-    i_values[i] = R_NaInt;
-    uint8_t *s = bam_aux_get(b, tags[i]);
-    if(!s)
-      continue;
-    errno = 0;
-    int64_t v = bam_aux2i(s);
-    i_values[i] = (errno != EINVAL) ? (int)v : R_NaInt;
-  }
-}
+// extract_int_aux_values(bam1_t *b, int *i_values, const char **tags, size_t tag_n)
+// has been moved to common.c
 
 // Returns expected number of erros in query sequence based on
 // a Poisson approximation of the Poisson binomial distribution
@@ -2704,6 +2693,65 @@ SEXP qpos_to_ref_pos(SEXP qpos_r, SEXP ops_r){
   return( ret_data_r );
 }
 
+
+// hiC_pairs; obtain paired reads in a format suitable for evaluating hiC linkage
+// data.
+// This is the first iteration; it will simply return all of the data to the R session.
+// This will create a temporary copy of everything resulting in at least temporarily
+// doubling the memory requirements. There are several options for dealing with this:
+// 1. Keep an external pointer and have functions to access data from that;
+// 2. Use allocVector3 and to transfer ownership of the data to R.
+// The external pointer has the advantage that it should be faster to implement functions
+// that do the actual evaluation since the data structures will not change (just need to
+// have a function to extract the pointer to a reasonble data structure).
+// Consider making it an option as to return data or an external pointer.
+//
+// bam_file_r: the location of a bam file. This should be sorted by _name_ (i.e. unsorted
+//             or resorted by query name). It should ideally be deduplicated though it would
+//             not be problematic to deduplicate; just time consuming to do it repeatedly.
+//             There is currently no test of whether the bam file is sorted; this could conceivably
+//             be done by checking the mate information as this gives an expectation of the order
+//             of reads. But leave it to the user for now.
+// params_r: integer parameters: min_sep, min_qual, min_AS, max_pair_no
+SEXP hiC_pair_data(SEXP bam_file_r, SEXP params_r){
+  if(TYPEOF(bam_file_r) != STRSXP || length(bam_file_r) != 1)
+    error("bam_file_r should be a character vector of length 1");
+  if(TYPEOF(params_r) != INTSXP || length(params_r) != 4)
+    error("params_r should be an integer vector of length 4: min_sep, min_qual, min_AS, max_pair_no");
+  const char *bam_file = CHAR(STRING_ELT(bam_file_r, 0));
+  int *params = INTEGER(params_r);
+  int min_sep = params[0];
+  int min_qual = params[1];
+  int min_AS = params[2];
+  size_t max_pair_no = (size_t)params[3];
+  Rprintf("Calling extract_read_pairs on %s\n", bam_file);
+  int error;
+  hiC_assembly data = extract_read_pairs(bam_file, min_sep, min_qual, min_AS, max_pair_no, &error);
+  Rprintf("extract_read_pairs returned with code: %d\n", error);
+  // Initially do not return the full set of alignment information; I don't think we need that
+  // return only the target read_pair vectors:
+  // query ids, alignments, targets
+  SEXP ret = PROTECT(allocVector(VECSXP, 3));
+  SET_VECTOR_ELT(ret, 0, allocVector(STRSXP, data.query_ids.n));
+  SEXP query_id_r = VECTOR_ELT(ret, 0);
+  for(size_t i=0; i < data.query_ids.n; ++i)
+    SET_STRING_ELT( query_id_r, i, mkChar(data.query_ids.a[i]) );
+
+  SET_VECTOR_ELT(ret, 1, allocMatrix(INTSXP, sizeof(sam_record) / sizeof(int), data.alignments.n));
+  memcpy(INTEGER(VECTOR_ELT(ret, 1)), data.alignments.a, sizeof(sam_record) * data.alignments.n);
+
+  SET_VECTOR_ELT(ret, 2, allocVector(VECSXP, data.targets.n));
+  SEXP targets_r = VECTOR_ELT(ret, 2);
+  for(size_t i=0; i < data.targets.n; ++i){
+    SET_VECTOR_ELT(targets_r, i, allocMatrix(INTSXP, sizeof(pair_info)/sizeof(int32_t), data.targets.a[i].reads.n));
+    memcpy( INTEGER(VECTOR_ELT(targets_r, i)), data.targets.a[i].reads.a, sizeof(pair_info) * data.targets.a[i].reads.n );
+  }
+  Rprintf("Data copied to R data structures\nDestroying original data\n");
+  free_hiC_assembly(&data);
+  UNPROTECT(1);
+  return(ret);
+}
+
 /////// This function got too complicated; see option below for alternative strategy ///
 // merge_transcripts
 // given an ops table with columns:
@@ -3045,6 +3093,7 @@ static const R_CallMethodDef callMethods[] = {
   {"load_bcf", (DL_FUNC)&load_bcf, 2},
   {"bcf_read_n", (DL_FUNC)&bcf_read_n, 3},
   {"arrange_lines", (DL_FUNC)&arrange_lines, 2},
+  {"hiC_pair_data", (DL_FUNC)&hiC_pair_data, 2},
   {NULL, NULL, 0}
 };
 

@@ -43,6 +43,63 @@ void cigar_string_read( struct cigar_string *cs, bam1_t *b ){
   }
 }
 
+sam_record init_sam_record(int target_id, int begin, int end, int flag,
+			   int q_begin, int q_end, int q_length, int map_q, int qc_length,
+			   int AS){
+  sam_record sr;
+  sr.target_id=target_id;
+  sr.begin=begin;
+  sr.end=end;
+  sr.flag=flag;
+  sr.q_begin=q_begin;
+  sr.q_end=q_end;
+  sr.q_length=q_length;
+  sr.map_q=map_q;
+  sr.qc_length = qc_length;
+  sr.AS = AS;
+  return(sr);
+};
+
+void sam_record_set(sam_record *sr, bam1_t *b){
+  sr->target_id = (int)b->core.tid;
+  sr->begin = (int)b->core.pos;
+  sr->flag = (int)b->core.flag;
+  sr->q_length = (int)b->core.l_qseq;
+  sr->map_q = (int)b->core.qual;
+  extract_int_aux_values(b, &sr->AS, (const char*[]){"AS"}, 1);
+  // need to parse the cigar values for the others;
+  sr->q_begin = 0;
+  sr->q_end = 0;
+  sr->end = sr->begin;
+  sr->qc_length = 0;
+  // if no cigar we should not try this
+  if(b->core.n_cigar == 0)
+    return;
+  // parse cigar if present
+  uint32_t *cigar = bam_get_cigar(b);
+  uint32_t op = bam_cigar_op(*cigar);
+  uint32_t op_len = bam_cigar_oplen(*cigar);
+  uint32_t op_type = bam_cigar_type(*cigar);
+  if(op == BAM_CHARD_CLIP){
+    sr->q_begin = op_len;
+    sr->q_end = op_len;
+    sr->qc_length += op_len;
+    if( bam_cigar_op(cigar[1]) == BAM_CSOFT_CLIP )
+      sr->q_begin += bam_cigar_oplen(cigar[1]);
+  }
+  if(op_type & 1)
+    sr->q_end = op_len;
+  if(op_type & 2)
+    sr->end += op_len;
+  for(int i=1; i < b->core.n_cigar; ++i){
+    op_type = bam_cigar_type(cigar[i]);
+    op_len = bam_cigar_oplen(cigar[i]);
+    sr->q_end += (op_type & 1) ? op_len : 0;
+    sr->qc_length += ((op_type & 1) || bam_cigar_op(cigar[i]) == BAM_CHARD_CLIP) ?  op_len: 0;
+    sr->end += (op_type & 2) ? op_len : 0;
+  }
+  return;
+}
 
 struct i_matrix init_i_matrix(size_t nrow, size_t ncol){
   struct i_matrix m;
@@ -282,6 +339,20 @@ char** split_string(const char *str, char delim, unsigned int *n){
   set_word( words + word_i, beg, end );
   return(words);
 }
+
+// Moved from read_bam.c to be available to other compilation units.
+void extract_int_aux_values(bam1_t *b, int *i_values, const char **tags, size_t tag_n){
+  for(size_t i=0; i < tag_n; ++i){
+    i_values[i] = R_NaInt;
+    uint8_t *s = bam_aux_get(b, tags[i]);
+    if(!s)
+      continue;
+    errno = 0;
+    int64_t v = bam_aux2i(s);
+    i_values[i] = (errno != EINVAL) ? (int)v : R_NaInt;
+  }
+}
+
 
 // The following function was copied from R/simple_range/arrang_lines.c
 // It doesn't really belong here, but it's useful for visualising alignments

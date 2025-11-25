@@ -3,22 +3,6 @@
 #include "qname_hash.h"
 #include <stdio.h>
 
-sam_record init_sam_record(int target_id, int begin, int end, int flag,
-			   int q_begin, int q_end, int q_length, int map_q, int qc_length,
-			   int AS){
-  sam_record sr;
-  sr.target_id=target_id;
-  sr.begin=begin;
-  sr.end=end;
-  sr.flag=flag;
-  sr.q_begin=q_begin;
-  sr.q_end=q_end;
-  sr.q_length=q_length;
-  sr.map_q=map_q;
-  sr.qc_length = qc_length;
-  sr.AS = AS;
-  return(sr);
-};
 
 
 khash_t(sam_id_h)* init_sam_hash(){

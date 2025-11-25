@@ -3,39 +3,12 @@
 
 #include "kvec.h"
 #include "khash.h"
+#include "common.h"
 #include <stdint.h>
 
 // Functions for creating a khash<string, kvec>
 // Where kvec holds an array of structs giving the locations of matches
 
-#define SAM_RECORD_FIELDS_N 10
-static const char* sam_record_field_names[SAM_RECORD_FIELDS_N] =
-  {"target.id", "r0", "r1", "flag", "q0", "q1", "q.length", "map.q", "qc.length", "AS"};
-
-/*! @typedef 
-  @abstract Structure for holding information about a single alignemnt.
-  @field target_id    Reference target id
-  @field begin        Reference start position
-  @field end          Reference end position (optional can be 0)
-  @field flag         Sam alignment flag
- */
-
-typedef struct sam_record {
-  int target_id;
-  int begin;
-  int end;
-  int flag;
-  int q_begin;
-  int q_end;
-  int q_length;
-  int map_q;
-  int qc_length;
-  int AS; // alignment score; may be NA
-} sam_record;
-
-sam_record init_sam_record(int target_id, int begin, int end, int flag,
-			   int q_begin, int q_end, int q_length, int map_q, int qc_length,
-			   int AS);
 
 typedef struct { kvec_t(sam_record); } sam_record_list;
 

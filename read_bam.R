@@ -369,6 +369,62 @@ int.to.bytes <- function(i, names=paste0("b", 1:4)){
     tmp
 }
 
+## Experimental function; the interface and behaviour is likely to change.
+## This is primarily designed for hiC data, but in theory can be used for
+## other purposes
+## file: a bam file sorted by query name where the auxiliary AS tag is
+##       defined for all alignments.
+## min.sep: only consider pairs of reads where distance between R1 and R2
+##          (start -> start) is at least min.sep bases
+## min.qual: minimum mapping quality for both R1 and R2 (may be 0)
+## min.AS:   minimum alignment score for both R1 and R2
+## max.pair: read in no more than max.pair number of pairs (mainly for testing)
+## merge.p:  parameters defining how to handle reads mapping to more than one location
+##           (i.e. with mapq = 0). Three integers, the two first (merge_max_n, merge_max_size)
+##           define whether a series of alignments to a single scaffold region can be merged to
+##           a single representative alignment. The third parameter defines how many scaffolds
+##           a read can map to. This may be useful when mapping to haplotype resolved assemblies
+##           where most reads can be expected to map to both haplotype scaffolds. merge.p may be
+##           NULL; in this case the simpler rules defined by the prior parameters are used whereby
+##           only reads with a unique maximum alignment score are considered.
+## exemptions: An integer list of scaffolds for which alignment to any number of exempted scaffolds
+##             is allowed. Note that these will still be merged using the parameters defined by merge.p
+##             exemptions can be an empty vector, but must be defined if merge.p is not NULL.
+##             NOTE that exemptions should use 0-based offsets rather than R's 1-based offsets.
+##             this may be changed in the future.
+get.read.pairs <- function(file,
+                           min.sep=1000,
+                           min.qual=0,
+                           min.AS=130,
+                           max.pair=0,
+                           merge.p=NULL, exemptions=integer()){
+    merge.pl <- NULL
+    if(!is.null(merge.p))
+        merge.pl <- list(as.integer(merge.p), as.integer(exemptions))
+    bam <- suppressWarnings( load.bam(file) )
+    tl <- target.lengths(bam)
+    tmp <- .Call("hiC_pair_data", file,
+                 as.integer(c(min.sep, min.qual, min.AS, max.pair)),
+                            merge.pl)
+    names(tmp) <- c("qid", "al", "targets");
+    names(tmp$targets) <- names(tl)
+    tmp$targets <- lapply(tmp$targets, t);
+    for(i in 1:length(tmp$targets)){
+        colnames(tmp$targets[[i]]) <- c("i", "beg", "m.tg", "m.beg", "al.n", "tg.n")
+        tmp$targets[[i]] <- as.data.frame(tmp$targets[[i]])
+    }
+    tmp$al <- as.data.frame(t(tmp$al))
+    colnames(tmp$al) <- c("target.id", "r0", "r1", "flag", "q0", "q1", "q.length", "map.q", "qc.length", "AS")
+    ## should set the column names of all the targets but the are:
+##    colnames(tmp$al) <- c("i", "beg", "m.tg", "m.beg")
+    ## lower bits of i are used to hold:
+    ## bit 1: 0 if left read
+    ## bit 2: 0 if read 1
+    ## bits 3-32: row in alignments table (0-based)
+    tmp
+}
+
+
 ## For drawing:
 ## stolen from simple_range.R: The interface should change at some point.
 ## x should be a matrix with two columns

@@ -2713,7 +2713,17 @@ SEXP qpos_to_ref_pos(SEXP qpos_r, SEXP ops_r){
 //             be done by checking the mate information as this gives an expectation of the order
 //             of reads. But leave it to the user for now.
 // params_r: integer parameters: min_sep, min_qual, min_AS, max_pair_no
-SEXP hiC_pair_data(SEXP bam_file_r, SEXP params_r){
+// merge_params_r: if not R_NilValue, should be a list containing the following elements:
+//                 1. int: merge_max_n, merge_max_size, max_al_n
+//                    These govern the merging of repeated alignments (up to merge_max_n) lying within
+//                    a given distance. Note that these will be coerced to uint32_t, so that specifying
+//                    -1 will allow any number of maximally scoring links to be merged. The merging
+//                    simply takes the central (i=n/2) alignment as representative.
+//                    max_al_n is the maximum number of normal scaffolds that a read can align to.
+//                  2. A vector of target indices defining a set of special scaffolds. 
+//                     All maximally scoring alignments to these scaffolds will be allowed; Again, these
+//                     will be merged using a single representative alignment (the central one).
+SEXP hiC_pair_data(SEXP bam_file_r, SEXP params_r, SEXP merge_params_r){
   if(TYPEOF(bam_file_r) != STRSXP || length(bam_file_r) != 1)
     error("bam_file_r should be a character vector of length 1");
   if(TYPEOF(params_r) != INTSXP || length(params_r) != 4)
@@ -2724,10 +2734,36 @@ SEXP hiC_pair_data(SEXP bam_file_r, SEXP params_r){
   int min_qual = params[1];
   int min_AS = params[2];
   size_t max_pair_no = (size_t)params[3];
-  Rprintf("Calling extract_read_pairs on %s\n", bam_file);
-  int error;
-  hiC_assembly data = extract_read_pairs(bam_file, min_sep, min_qual, min_AS, max_pair_no, &error);
-  Rprintf("extract_read_pairs returned with code: %d\n", error);
+  int error_no;
+  hiC_assembly data;
+  int merge_params[3] = {1, 0, 1};
+  // kvi is a typedef of kvec_t(int)
+  // I somehow seemed to need this for certain operations
+  kvi exemptions;
+  if(merge_params_r == R_NilValue){
+    Rprintf("Calling extract_read_pairs on %s\n", bam_file);
+    data = extract_read_pairs(bam_file, min_sep, min_qual, min_AS, max_pair_no, &error_no);
+    Rprintf("extract_read_pairs returned with code: %d\n", error_no);
+  }else{
+    if(TYPEOF(merge_params_r) != VECSXP || length(merge_params_r) != 2)
+      error("merge_params_r should be a list of length 2");
+    SEXP merge_r = VECTOR_ELT(merge_params_r, 0);
+    SEXP exemptions_r = VECTOR_ELT(merge_params_r, 1);
+    if(TYPEOF(merge_r) != INTSXP || length(merge_r) != 3)
+      error("The merge_parameters should be an integer vector of length 3, giving merge_max_n, merge_max_size, max_al_n");
+    if(TYPEOF(exemptions_r) != INTSXP)
+      error("exemptions_ should be an integer vector");
+    memcpy(merge_params, INTEGER(merge_r), sizeof(int) * 3);
+    kv_init(exemptions); // probably not needed
+    exemptions.n = exemptions.m = length(exemptions_r);
+    exemptions.a = realloc(exemptions.a, sizeof(int) * exemptions.n);
+    memcpy(exemptions.a, INTEGER(exemptions_r), sizeof(int) * exemptions.n);
+    data = extract_read_pairs_2(bam_file, min_sep, min_AS, max_pair_no, merge_params[0], merge_params[1],
+			      merge_params[2], exemptions, &error_no);
+    Rprintf("extract_read_pairs_2 returned with code: %d\n", error_no);
+    // destroy the exemptions vector; we don't have a need for it anymore
+    kv_destroy(exemptions);
+  }
   // Initially do not return the full set of alignment information; I don't think we need that
   // return only the target read_pair vectors:
   // query ids, alignments, targets
@@ -3093,7 +3129,7 @@ static const R_CallMethodDef callMethods[] = {
   {"load_bcf", (DL_FUNC)&load_bcf, 2},
   {"bcf_read_n", (DL_FUNC)&bcf_read_n, 3},
   {"arrange_lines", (DL_FUNC)&arrange_lines, 2},
-  {"hiC_pair_data", (DL_FUNC)&hiC_pair_data, 2},
+  {"hiC_pair_data", (DL_FUNC)&hiC_pair_data, 3},
   {NULL, NULL, 0}
 };
 

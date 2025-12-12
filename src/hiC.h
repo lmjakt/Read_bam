@@ -161,6 +161,8 @@
   @field    pos       position of read (reference begin by default)
   @field    m_target  target_id of mate mapping
   @field    m_pos     position of mate
+  @field    al_n      The number of alignments of read and mate with the same alignment score
+                      held in the lower and upper 16 bits for the mate and read respectively
 
   @Discussion  Using only 30 bits to hold the index means that we are limited to using
                about 500 million read pairs. That *should* generally be OK. But it should not
@@ -173,6 +175,8 @@ typedef struct {
   uint32_t pos;
   uint32_t m_target;
   uint32_t m_pos;
+  uint32_t al_n;
+  uint32_t targets_n;
 } pair_info;
 
 
@@ -183,7 +187,35 @@ typedef struct {
 
 // sr should be sam_record sr[2]; not sure I can define that
 // in the header.
-pair_info init_pair_info(sam_record *sr, uint32_t i, uint32_t o);
+pair_info init_pair_info(sam_record *sr, uint32_t i, uint32_t o, uint32_t read_n, uint32_t mate_n);
+
+// Holds alignments for members of a read pair that have a maximum score
+// and are on the same target
+//typedef kvec_t(sam_record) sam_record_list;
+
+typedef kvec_t(int) kvi;
+
+typedef struct {
+  kvec_t(sam_record) als[2];
+  uint32_t min_pos[2];
+  uint32_t max_pos[2];
+  //  int score[2];
+  int exempted;  // 0 for normal; 1 for exemptions.
+} target_candidates;
+
+target_candidates init_target_candidates(int exempted);
+void init_target_candidates_p(target_candidates *tc, int exempted);
+void free_target_candidates(target_candidates *tc);
+
+typedef struct {
+  kvec_t(target_candidates) targets;
+  // candidates with max score on read 1 or read 2, normal or exempt
+  // norm read1, norm read2, exempt read1, exempt read2
+  kvec_t(size_t) active[4]; 
+  int score[2]; // Alignment score for read 1 and read2
+} candidate_alignments;
+
+//candidate_alignments init_candidate_alignments(size_t n, kvec_t(int) exempted);
 
 typedef struct {
   int32_t target_id;
@@ -195,6 +227,19 @@ typedef struct {
 void init_hiC_target(hiC_target *ht, int32_t target_id, int32_t target_length);
 
 void free_hiC_target(hiC_target *ht);
+
+typedef struct {
+  uint64_t *bits;
+  size_t m; // the number of uint64_t holding the bits
+  size_t b_n; // the number of bits held
+} bit_mask;
+
+
+// holds two size_ts.. 
+typedef struct {
+  size_t i;
+  size_t n;
+}size_t_pair;
 
 /*! @typedef
   @abstract Holds data for all selected read pairs. There should be
@@ -208,6 +253,10 @@ void free_hiC_target(hiC_target *ht);
 typedef struct {
   kvec_t(int32_t) target_lengths;
   kvec_t(hiC_target) targets;
+  // the target_bits and target_ns are used to allow the rollback of
+  // kv_push(pair_info, targets[i];
+  bit_mask target_bits;
+  kvec_t(size_t_pair) target_n;
   // note that alignment pairs must be stored one after the other.
   // with read one before read 2. Which is left and which is right is defined
   // dynamically by vectors of integers.
@@ -235,5 +284,9 @@ void free_hiC_assembly(hiC_assembly *ha);
  */
 hiC_assembly extract_read_pairs(const char* bam_file, int min_sep, int min_qual,
 				int min_AS, size_t max_n, int *error);
+
+hiC_assembly extract_read_pairs_2(const char* bam_file, int min_sep, int min_AS, size_t max_pairs,
+				  int merge_max_n, int merge_max_size, int max_al_n,
+				  kvi exemptions, int *error);
 
 #endif

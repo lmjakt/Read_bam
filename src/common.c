@@ -87,8 +87,10 @@ void sam_record_set(sam_record *sr, bam1_t *b){
     if( bam_cigar_op(cigar[1]) == BAM_CSOFT_CLIP )
       sr->q_begin += bam_cigar_oplen(cigar[1]);
   }
-  if(op_type & 1)
+  if(op_type & 1){
     sr->q_end = op_len;
+    sr->qc_length = op_len;
+  }
   if(op_type & 2)
     sr->end += op_len;
   for(int i=1; i < b->core.n_cigar; ++i){

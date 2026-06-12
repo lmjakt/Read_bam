@@ -442,3 +442,4 @@ arrange.lines <- function(x){
        stop("NA values not allowed")
     .Call("arrange_lines", as.double(x[,'x0']), as.double(x[,'x1']))
 }
+

@@ -1,4 +1,4 @@
-#include "kstring.h"
+// #include "kstring.h"
 #include "ksort.h"
 #include <htslib/sam.h>
 #include <htslib/hts.h>

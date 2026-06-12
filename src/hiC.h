@@ -2,9 +2,34 @@
 #define _HIC_H
 
 #include <stdint.h>
-#include "kstring.h"
+// #include "kstring.h"
+#include <htslib/kstring.h>
 #include "kvec.h"
 #include "common.h"
+
+// sam.h and htslib.h include a local copy of kstring.h
+// This is includes a number of additional functions.
+// I cannot include two kstring.h files as this would
+// lead to multiple definitions.
+//
+// These two functions are used by hiC.c
+// If I wish to use them elsewhere I should make a different
+// 
+// these copy an existing string to the kstring buffer
+static inline int kset_string(const char *p, kstring_t *s)
+{
+  s->l = 0;
+  return kputs(p, s);
+}
+
+static inline int ksetn_string(const char *p, size_t l, kstring_t *s)
+{
+  s->l = 0;
+  return kputsn(p, l, s);
+}
+
+/// END of code added by LMJ
+
 
 ////// These functions are meant to consider how to:
 ////// 1. Compensate for uneven coverage of uniqualy mapping reads in HiC-data

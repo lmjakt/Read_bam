@@ -677,7 +677,7 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
 	  if(opts->depth)
 	    ++opts->depth[d_o];
 	  if(opts->al_q_seq && map_qual > ((opts->al_q_seq[d_o] >> 4) & 255)){
-	    uint8_t nibble = bam_seqi(nibbles, q0 + j - 1);
+	    uint8_t nibble = bam_seqi(nibbles, q0 + j - (1 + h_clip));
 	    opts->al_q_seq[d_o] = (uint32_t)nibble | (map_qual << 4) | (al_i << 12);
 	  }
 	}

@@ -39,6 +39,7 @@
 #define AR_AUX_MM 6 // 0x40  parse MM info; implies if AR_Q_QUAL, and (AR_Q_SEQ if reference sequence defined).
 #define AR_Q_INTRON_DEPTH 7 // 0x80  calculate depths for N operations only; useful for RNA-seq data.
 #define AR_Q_ERR_EXP 8 // 0x100 estimate the expected number of errors in the sequence.
+#define AR_AL_Q_SEQ 9 // 0x200 Return a sequence the length of the region giving the best alignments.
 
 // A default maximum intron size; this can be over-ridden by the user
 // This is relevant to the calculation of intron_depth, but should not
@@ -50,8 +51,9 @@
 
 // The number of fields in the list returned by alignments_region()
 // and their names.
-#define AR_R_FIELDS_N 12
-static const char* ar_return_fields[AR_R_FIELDS_N] = {"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar", "qual", "mm", "intron.depth", "mate"};
+#define AR_R_FIELDS_N 13
+static const char* ar_return_fields[AR_R_FIELDS_N] = {"ref", "query", "al", "ops", "seq", "diff", "depth", "cigar",
+						      "qual", "mm", "intron.depth", "mate", "aligned.query"};
 
 // The number of rows in an alignments table ($al)
 #define AR_AL_RN 15
@@ -256,6 +258,17 @@ void vectori_free(struct vectori *v);
 // Options taken by cigar_to_table
 // depth: if not NULL, pointer for sequence depth
 // i_depth; intron_depth
+// al_q_seq:
+//   Sequence aligned to the reference; this includes only the
+//   aligned residues. Deletions from the query will be gaps
+//   but insertions into query sequences are not encoded here.
+//   al_q_seq.0-3  : The aligned base in nibble encoding.
+//   al_q_seq.4-11 : Quality of alignment (i.e. mapping qual)
+//   al_q_seq.12-31: The alignment id (if it fits...)
+// The index of the aligned sequence.
+//                   If a sequence has already been aligned
+//                   then it will only be replaced if the score or mapping
+//                   quality of the new sequence is provided.
 // depth_l: length of depth and i_depth arrays
 //
 // extra_depth and include_left_als are only relevant to
@@ -263,10 +276,11 @@ void vectori_free(struct vectori *v);
 // for details.
 struct cigar_parse_options {
   int *depth, *i_depth;
+  uint32_t *al_q_seq;
+  size_t depth_l;
   int depth_begin;
   int include_left_als;
   int max_intron_length;
-  size_t depth_l;
   char *qseq;
   char *qqual;
   size_t qseq_l;

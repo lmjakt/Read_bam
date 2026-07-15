@@ -1,2 +1,6 @@
-PKG_CPPFLAGS="-I${HOME}/include"
-PKG_LIBS="-L${HOME} -lhts"
+## Edit as needed.
+##PKG_CPPFLAGS="-I${HOME}/include"
+##PKG_LIBS="-L${HOME} -lhts"
+##PKG_CPPFLAGS="-I/usr/local/include"
+##PKG_LIBS="-L/usr/local/lib -lhts"
+PKG_LIBS="-lhts"

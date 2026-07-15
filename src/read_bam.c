@@ -108,6 +108,11 @@ char *bam_seq(bam1_t *bam){
 // but note that whatever we do, we end up copying data too much
 // Note that we could probably use, a single call of `nibble2base`
 // to get the sequence. But it doesn't look like nibble2base is exported
+//
+/// Updated NOTE: Better to use, bam_get_seq() and bam_seqi()
+/// To get the sequence. And there is a table seq_nt16_str
+///
+/// seq_nt16_str[ bam_seqi( bam_get_seq(), i ) ]
 size_t bam_seq_p(bam1_t *bam, char **seq, size_t seq_l){
   if(seq_l < 1 + bam->core.l_qseq){
     seq_l = 1 + bam->core.l_qseq;
@@ -624,6 +629,8 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
   *q_beg = 1;
   *q_end = 0;
 
+  uint8_t map_qual = al->core.qual;
+  uint8_t *nibbles = bam_get_seq(al);
   uint32_t *cigar = bam_get_cigar(al);
   uint32_t cigar_l = al->core.n_cigar;
   if(cigar_l < 1)
@@ -658,7 +665,7 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
       *q_end = q_pos;
     if(do_push)
       push_column( al_coord, (int[]){ al_i, op, type, r0, q0, *r_pos, q_pos, op_length } );
-    if((opts->depth || opts->diff) && op == BAM_CMATCH){
+    if((opts->depth || opts->diff || opts->al_q_seq) && op == BAM_CMATCH){
       // the r0 and q0 coordinates are 1 based; we need to adjust for this
       for(uint32_t j=0; j < op_length; ++j){
 	size_t r = (r0 + j) - 1;
@@ -666,7 +673,14 @@ void cigar_to_table(bam1_t *al, int al_i, int *r_pos,
 	size_t d_o = r - opts->depth_begin;
 	// negative coordinates should overflow and hence be larger than the buffers
 	// unless these are extremely large (close to the limit of size_t)
-	if(opts->depth && d_o < opts->depth_l) ++opts->depth[d_o];
+	if((opts->depth || opts->al_q_seq) && d_o < opts->depth_l){
+	  if(opts->depth)
+	    ++opts->depth[d_o];
+	  if(opts->al_q_seq && map_qual > ((opts->al_q_seq[d_o] >> 4) & 255)){
+	    uint8_t nibble = bam_seqi(nibbles, q0 + j - 1);
+	    opts->al_q_seq[d_o] = (uint32_t)nibble | (map_qual << 4) | (al_i << 12);
+	  }
+	}
 	if(!do_push)
 	  continue;
 	// Here I assume that if qseq_l is set then qseq will also be set
@@ -1414,15 +1428,23 @@ SEXP alignments_region_mt(SEXP bam_file_r, SEXP index_file_r,
 
   // If depth requested we can add this to the data structure immediately..
   int *seq_depth = 0;
+  uint32_t *aligned_qseq = 0;
   /// I think I should get rid of the 1 + here.
   int region_length = 1 + region_range[1] - region_range[0];
-  if(bit_set(opt_flag, AR_Q_DEPTH) | bit_set(opt_flag, AR_Q_INTRON_DEPTH))
+  if(bit_set(opt_flag, AR_Q_DEPTH) | bit_set(opt_flag, AR_Q_INTRON_DEPTH)
+     | bit_set(opt_flag, AR_AL_Q_SEQ))
     cig_opt.depth_l = region_length;
   if(bit_set(opt_flag, AR_Q_DEPTH)){
     SET_VECTOR_ELT( ret_data, 6, allocVector(INTSXP, region_length) );
     seq_depth = INTEGER(VECTOR_ELT(ret_data, 6));
     memset( seq_depth, 0, sizeof(int) * region_length );
     cig_opt.depth = seq_depth;
+  }
+  if(bit_set(opt_flag, AR_AL_Q_SEQ)){
+    SET_VECTOR_ELT( ret_data, 12, allocVector(INTSXP, region_length) );
+    aligned_qseq = (uint32_t*)INTEGER(VECTOR_ELT(ret_data, 12));
+    memset( aligned_qseq, 0, sizeof(uint32_t) * region_length);
+    cig_opt.al_q_seq = aligned_qseq;
   }
   // And similarly for the intron depth:
   cig_opt.max_intron_length = MAX_INTRON_L; // unless set by user
@@ -2788,325 +2810,8 @@ SEXP hiC_pair_data(SEXP bam_file_r, SEXP params_r, SEXP merge_params_r){
   return(ret);
 }
 
-/////// This function got too complicated; see option below for alternative strategy ///
-// merge_transcripts
-// given an ops table with columns:
-//   al.i, op, type, r0, q0, r1, q1, op.l
-// a vector of flags
-// a maximum 3' distance
-// a vector of [required flags, banned flags ]
-//    Note that one and only one of these must have 16 set
-//    i.e. reg_f XOR ban_f must equal 16.
-// Will merge alignments assumed to be long transcripts following
-// some simple rules:
-// 1. The 3' end of the alignments must be within the max distance
-//    (this could be considered optional; the main issue isn't what
-//    is correct biologically, but what is easy to encode.
-// 2. All upstream intron positions must be identical.
-//
-// This doesn't really feel like it belongs here, but since it is making
-// use of the ops table structure it sort of makes sense to use it here.
-/* SEXP merge_transcripts(SEXP ops_r, SEXP flags_r, */
-/* 		       SEXP max_distance_r, SEXP flag_filter_r){ */
-/*   // In order to simplify the logic, this function will make use of a set */
-/*   // of locally defined structs; these will contain only integers; */
-
-/*   typedef struct transcripts { */
-/*     // p_start and p_end are chromosomal coordinates giving the range */
-/*     // p_start < p_end */
-/*     // row_start and row_end are indices in the transcript_rows table */
-/*     int p_start; int p_end; int row_start; int row_end; */
-/*   } transcripts; */
-/*   typedef struct transcript_rows { */
-/*     // tr_i: the index in a transcripts table */
-/*     // ops_row: a row in an cigar_ops table */
-/*     // count: the number of times a the operation has been encountered */
-/*     // next_step: the distance to the next entry in this table */
-/*     //            0 if no further entries for this transcript */
-/*     int tr_i; int ops_row; int count; int next_step; */
-/*   } transcript_rows; */
-/*   typedef struct transcript_alignment { */
-/*     // tr_i: the index of an entry in transcripts */
-/*     // al_i: the identifier of an alignment. Taken directly from the ops */
-/*     //       table. */
-/*     int tr_i; int al_i; */
-/*   } transcript_alignment; */
-  
-/*   if(TYPEOF(ops_r) != INTSXP || length(ops_r) < 8) */
-/*     error("ops_r should be an integer matrix with 8 columns"); */
-/*   if(TYPEOF(flags_r) != INTSXP || TYPEOF(max_distance_r) != INTSXP) */
-/*     error("flags_r AND max_distance_r should be integer vectors"); */
-/*   if(TYPEOF(flag_filter_r) != INTSXP || length(flag_filter_r) != 2) */
-/*     error("flag_filter_r should be an integer vector of length 2"); */
-/*   SEXP op_dims_r = getAttrib(ops_r, R_DimSymbol); */
-/*   if(length(op_dims_r) != 2) */
-/*     error("ops_r should be a matrix"); */
-/*   int *dims = INTEGER(op_dims_r); */
-/*   // As of writing we must have at least 8 columns (dims[1]) */
-/*   int ops_ncol = 8; */
-/*   if(dims[1] != ops_ncol) */
-/*     error("The ops_r table should have 8 columns. Specified table has: %d", dims[1]); */
-/*   int ops_nrow = dims[0]; */
-/*   if(ops_nrow < 1) */
-/*     error("The ops_r table must have at least one row"); */
-/*   int *ops = INTEGER(ops_r); */
-/*   int *ops_ali = ops; */
-/*   int *ops_op = ops + ops_nrow; */
-/*   int *ops_r0 = ops + (3 * ops_nrow); */
-/*   int *ops_r1 = ops + (5 * ops_nrow); */
-
-/*   // check that the flags vector is of the correct length: */
-/*   // This assumes that the ops is sorted by alignment id with the largest */
-/*   // last: */
-/*   // and -1 because the table is from R where counting is from 1. */
-/*   int flags_n = length(flags_r); */
-/*   if(flags_n != (ops_ali[ops_nrow-1] - 1)) */
-/*     error("There must be a flag for every entry"); */
-/*   int *flags = INTEGER(flags_r); */
-
-/*   if(length(max_distance_r) != 1) */
-/*     error("max_distance_r should have a length of 1"); */
-/*   int max_distance = INTEGER(max_distance_r)[0]; */
-  
-/*   // The flag_filter must specify the orientation of reads; forward or reverse */
-/*   // This implies that flag 16 (0x10) must either be required or banned */
-/*   // It is also clear that no flags should both be required and banned */
-/*   int *flag_filter = INTEGER(flag_filter_r); */
-/*   // As I understand it, the following operation is technically undefined */
-/*   // for signed integers; but R doesn't have unsigned ints... */
-/*   if(flag_filter[0] & flag_filter[1] > 0 || */
-/*      (0x10 & (flag_filter[0] ^ flag_filter[1])) != 0x10) */
-/*     error("Improper flag filter set; either common flags or direction not specified"); */
-  
-/*   // To store the transcript information we make use of four tables: */
-/*   // tr: p_start, p_end, row_start, row_end */
-/*   //    p_start: the genomic start position (p_start < p_end) */
-/*   //    p_end:   the genomic end position (p_end > p_start) */
-/*   //    row_start: first row in tr_rows */
-/*   //    row_end:   last row in tr_rows */
-/*   //  */
-/*   // tr_rows: tr_i, row, count, step_next */
-/*   // The rows in the ops table that define a transcript */
-/*   //    tr_i: 0 based index of the transcript. These refer to the row in the tr table. */
-/*   //    count: the number of times that the op has been seen in compatible */
-/*   //           transcripts */
-/*   //    step_next: the number of rows in tr_rows before the appearance of the next */
-/*   //               op for the given transcript. This is necessary because compatible */
-/*   //               transcripts may not appear consecutively in the alignments. */
-/*   //  note; an entry is made only the first time a unique operation is encountered; */
-/*   //        after that, the count is incremented. */
-/*   //  */
-/*   // tr_al: tr_i, al_i, */
-/*   // where: tr_i is a transcript identifier; */
-/*   //        al_i are the alignment identifiers from the ops table */
-/*   // AND we need to keep track of the smallest row in the tr_pos table */
-/*   // that is still active. */
-
-/*   // note that: */
-/*   // tr_vec.length will give the number of transcrips that have been defined */
-/*   struct tr_vec = vector_init( OPS_INIT_SIZE, sizeof(transcripts) ); */
-/*   struct tr_rows_vec = vector_init( OPS_INIT_SIZE, sizeof(transcript_rows) ); */
-/*   struct tr_al_vec = vector_init( OPS_INIT_SIZE, sizeof(transcript_alignment) ); */
-
-/*   // We will also keep track of matching rows in tr_rows_vec */
-/*   struct vectori tr_matching_rows = vectori_init( OPS_INIT_SIZE ); */
-/*   struct vectori al_matching_rows = vectori_init( OPS_INIT_SIZE ); */
-/*   // the oldest transcript that can still overlap with the last */
-/*   // observed alignment. */
-/*   int oldest_active_tr = 0; */
-/*   int current_al_i = ops_ali[0]; */
-/*   //  int last_al_i = ops_ali[0]; */
-/*   int ops_start_row = 0; */
-/*   int ops_end_row = 0; */
-/*   for(int i=0; i < ops_nrow; ++i){ */
-/*     last_al_i = current_al_i = ops_ali[i]; */
-/*     // check flags; */
-/*     // and skip until we get to an ok flag and a match operation */
-/*     while( i < ops_nrow && */
-/* 	   flag_filter[0] & flags[ ops_ali[i]-1 ] == 0 && */
-/* 	   flag_filter[1] & flags[ ops_ali[i]-1 ] > 0 && */
-/* 	   ops_ops[i] != CIG_M){ */
-/*       ++i; */
-/*     } */
-/*     if(i == ops_nrow) */
-/*       break; */
-/*     current_al_i = ops_ali[i]-1; */
-/*     ops_start_row = i; */
-/*     int al_start = ops_r0[i]; */
-/*     // then find the end of the current alignment: */
-/*     int al_end = -1; */
-/*     while(i < ops_nrow && ops_ali[i] == current_al_i){ */
-/*       if(ops_op[i] == CIG_M){ */
-/* 	al_end = ops_r1[i]; */
-/* 	ops_end_row = i; */
-/*       } */
-/*       ++i; */
-/*     } */
-/*     if(al_end == -1){ */
-/*       Rprintf("failed to find end for alignment: %d\n, skipping\n", current_al_i + 1); */
-/*       continue; */
-/*     } */
-/*     // Then go through all active alignments and check compatibility; */
-/*     int compat_tr_n = 0; */
-/*     // alignment is forward if 0x10 is banned...  */
-/*     int fwd = flag_filter[1] & 0x10 > 0; */
-/*     transcript *tr = 0; */
-/*     for(int j=oldest_active_tr; j < tr_vec.length; ++j){ */
-/*       tr = (transcript *tr)vector_at(&tr, j); */
-/*       if(tr->p_end < ops_r0[al_start]){ */
-/* 	oldest_active_tr = j + 1; */
-/* 	continue; */
-/*       } */
-/*       // check for compatability; */
-/*       int k = tr->row_start; */
-/*       int l = ops_start_row;  // must stay within ops_start_row -> ops_end_row */
-/*       int compatible = 1; */
-/*       // clear the record of matching rows; */
-/*       tr_matching_rows.n = 0; */
-/*       al_matching_rows.n = 0; */
-/*       // we can skip directly if fwd is FALSE and the start points are too divergent */
-/*       if(!fwd && abs( al_start - tr->p_start ) > max_distance) */
-/* 	continue; */
-/*       while(k < tr_rows_vec.length){ */
-/* 	transcript_rows *tr_rows = (transcript_rows*)vector_at(&tr_rows_vec, k); */
-/* 	int increment = tr_rows.next_step; */
-/* 	// increment l until we hit an intron; */
-/* 	while( l < ops_end_row && ops_op[l] != CIG_N ) */
-/* 	  ++l; */
-/* 	// if the operation in tr is not an intron, go to next */
-/* 	if( ops_op[ tr_rows->ops_row ] != CIG_N ) */
-/* 	  goto next_op; */
-
-/* 	int introns_match = (ops_r0[ tr_rows->ops_row ] == ops_r0[l] && ops_r1[ tr_rows->ops_row ] == ops_r1[l]); */
-/* 	// if !fwd the intron operations must match; */
-/* 	if(!fwd && !introns_match){ */
-/* 	  compatible = 0; */
-/* 	  break; */
-/* 	} */
-/* 	// if fwd, the intron operations must match once the tr intron is caugth up with */
-/* 	while(l < ops_end_row && ops_op[l] != CIG_N && ops_r0[l] < ops_r0[ tr_rows->ops_row ]) */
-/* 	  ++l; */
-/* 	introns_match = (ops_r0[ tr_rows->ops_row ] == ops_r0[l] && ops_r1[ tr_rows->ops_row ] == ops_r1[l]); */
-/* 	if(!introns_match){ */
-/* 	  compatible = 0; */
-/* 	  break; */
-/* 	} */
-/* 	vectori_push( tr_matching_rows, k ); */
-/* 	vectori_push( al_matching_rows, l ); */
-/* 	if(increment == 0) // last entry; should have pointed to a match */
-/* 	  break; */
-/*       next_op: */
-/* 	k += increment; */
-/*       } */
-/*       // if fwd, then the last tr operation must m */
-/*       if(!compatible || (fwd && abs( al_end - tr->p_end ) > max_distance)) */
-/* 	continue; */
-/*       // If we get here, then compatible should be true; */
-/*       for(k=0; mi < tr_matching_rows.n; ++mi){ */
-/* 	tr_row = (transcript_rows*)vector_at(&tr_rows_vec, tr_matching_rows.data[k]); */
-/* 	tr_row->count++; */
-/*       } */
-/*       // if fwd is true, then either: */
-/*       // increment the counter for the first (match) operation or: */
-/*       // add an additional match operation at the end. This will need to have */
-/*       if(fwd){ */
-/* 	int k = tr->row_start; */
-/* 	tr_rows = (transcript_rows*)vector_at(&tr_rows_vec, k); */
-/* 	transcripts_rows *prev_tr_row = tr_rows; */
-/* 	int increment; */
-/* 	while(1){ */
-/* 	  increment = tr_rows->next_step; */
-/* 	  if(increment == 0) */
-/* 	    break; */
-/* 	  tr_rows = (transcript_rows*)vector_at(&tr_rows_vec, k + increment); */
-/* 	  if(ops_op[ tr_rows->ops_row ] != CIG_M) */
-/* 	    break; */
-/* 	  k += increment; */
-/* 	} */
-/* 	if( ops_r0[ prev_tr_row->ops_row ] == tr->p_start ){ */
-/* 	  prev_tr_row->count++; */
-/* 	}else{ */
-/* 	  // do complicated merging procedure... */
-/* 	  int new_step = k - tr_rows_vec.length + increment; */
-/* 	  prev_tr_row->next_step = tr_rows_vec.length - k; */
-/* 	  vector_push( &tr_rows_vec, (void*){ prev_tr_row->tr-i, prev_tr_row->ops_row, 1, new_step }); */
-/* 	} */
-/*       } */
-/*       // if not forward we need to add all of the additional rows from l to end;  */
-/*     } */
-/*   } */
-
-/* } */
 
 
-// merge_transcripts
-// given an ops table with columns:
-//   al.i, op, type, r0, q0, r1, q1, op.l
-// a vector of flags
-// a maximum 3' distance
-// a vector of [required flags, banned flags ]
-//    Note that one and only one of these must have 16 set
-//    i.e. reg_f XOR ban_f must equal 16.
-// Will merge alignments assumed to be long transcripts following
-// some simple rules:
-// 1. The 3' end of the alignments must be within the max distance
-//    (this could be considered optional; the main issue isn't what
-//    is correct biologically, but what is easy to encode.
-// 2. All upstream intron positions must be identical.
-
-
-// This should be refactored to use code in a separate compilation unit
-// This one is getting too complex.
-/* SEXP merge_transcripts(SEXP ops_r, SEXP flags_r, */
-/* 		       SEXP max_distance_r, SEXP flag_filter_r){ */
-/*   // In order to simplify the logic, this function will make use of a set */
-/*   // of locally defined structs; these will contain only integers; */
-/*   if(TYPEOF(ops_r) != INTSXP || length(ops_r) < 8) */
-/*     error("ops_r should be an integer matrix with 8 columns"); */
-/*   if(TYPEOF(flags_r) != INTSXP || TYPEOF(max_distance_r) != INTSXP) */
-/*     error("flags_r AND max_distance_r should be integer vectors"); */
-/*   if(TYPEOF(flag_filter_r) != INTSXP || length(flag_filter_r) != 2) */
-/*     error("flag_filter_r should be an integer vector of length 2"); */
-/*   SEXP op_dims_r = getAttrib(ops_r, R_DimSymbol); */
-/*   if(length(op_dims_r) != 2) */
-/*     error("ops_r should be a matrix"); */
-/*   int *dims = INTEGER(op_dims_r); */
-/*   // As of writing we must have at least 8 columns (dims[1]) */
-/*   int ops_ncol = 8; */
-/*   if(dims[1] != ops_ncol) */
-/*     error("The ops_r table should have 8 columns. Specified table has: %d", dims[1]); */
-/*   int ops_nrow = dims[0]; */
-/*   if(ops_nrow < 1) */
-/*     error("The ops_r table must have at least one row"); */
-/*   int *ops = INTEGER(ops_r); */
-/*   int *ops_ali = ops; */
-/*   int *ops_op = ops + ops_nrow; */
-/*   int *ops_r0 = ops + (3 * ops_nrow); */
-/*   int *ops_r1 = ops + (5 * ops_nrow); */
-  
-/*   // check that the flags vector is of the correct length: */
-/*   // This assumes that the ops is sorted by alignment id with the largest */
-/*   // last: */
-/*   // and -1 because the table is from R where counting is from 1. */
-/*   int flags_n = length(flags_r); */
-/*   if(flags_n != (ops_ali[ops_nrow-1] - 1)) */
-/*     error("There must be a flag for every entry"); */
-/*   int *flags = INTEGER(flags_r); */
-  
-/*   if(length(max_distance_r) != 1) */
-/*     error("max_distance_r should have a length of 1"); */
-/*   int max_distance = INTEGER(max_distance_r)[0]; */
-  
-/*   // The flag_filter must specify the orientation of reads; forward or reverse */
-/*   // This implies that flag 16 (0x10) must either be required or banned */
-/*   // It is also clear that no flags should both be required and banned */
-/*   int *flag_filter = INTEGER(flag_filter_r); */
-/*   // As I understand it, the following operation is technically undefined */
-/*   // for signed integers; but R doesn't have unsigned ints... */
-/*   if(flag_filter[0] & flag_filter[1] > 0 || */
-/*      (0x10 & (flag_filter[0] ^ flag_filter[1])) != 0x10) */
-/*      error("Improper flag filter set; either common flags or direction not specified"); */
-/* } */
 
 static const R_CallMethodDef callMethods[] = {
   {"load_bam", (DL_FUNC)&load_bam, 2},
@@ -3137,4 +2842,3 @@ void R_init_read_bam(DllInfo *info)
 {
   R_registerRoutines(info, NULL, callMethods, NULL, NULL);
 }
-

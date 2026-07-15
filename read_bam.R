@@ -133,6 +133,7 @@ uniq.query.pairs <- function(bam.ptr, query.ids, target.sel, target.equiv=NULL){
 ## 8 intron depth vector
 ## 9 estimate error number as the sum of error probabilities
 ##   (i.e. a Poisson approximation of the Poisson Binomial distribution)
+## 10 Return a combined alignment of query sequences to the reference.
 ## flag.filter: a vector of two elements, [ required flags, banned flags ]
 ## min.mq = minimum mapping quality
 ## min.ql = minimum query length (as reported in the bam_core field; this is not the
@@ -154,6 +155,18 @@ aligned.region <- function(region, range, bam.ptr, transpose=TRUE, flag.filter=c
     tmp
 }
 
+## opt.flag is the bitwise OR of bits:
+## 1 return seq_data as a character vector array
+## 2 return positions that differ from reference; requires that ref.seq is specified
+## 3 calculate sequencing depth throughout the region
+## 4 construct a cigar string..
+## 5 return qualities
+## 6 mate information.
+## 7 parse MM auxiliary data (base modifications)
+## 8 intron depth vector
+## 9 estimate error number as the sum of error probabilities
+##   (i.e. a Poisson approximation of the Poisson Binomial distribution)
+## 10 Return a combined alignment of query sequences to the reference.
 aligned.region.mt <- function(bam.f, region, range, opt.flag=0L, nthreads=1L, flag.filter=c(0,0),
                               ref.seq="", min.mq=0, min.ql=0, max.intron.length=4096L,
                               transpose=TRUE, bam.f.index=paste0(bam.f, c(".bai", ".csi"))){
